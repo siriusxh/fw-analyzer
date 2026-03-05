@@ -1,0 +1,277 @@
+"""
+tests/test_exporters.py
+
+测试三个导出器：CSV、JSON、Markdown。
+验证输出格式正确、内容完整、无 IO 副作用（只返回字符串）。
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+from ipaddress import IPv4Network
+
+import pytest
+
+from fw_analyzer.exporters.csv_exporter import CsvExporter
+from fw_analyzer.exporters.json_exporter import JsonExporter
+from fw_analyzer.exporters.markdown_exporter import MarkdownExporter
+from fw_analyzer.analyzers.engine import AnalysisResult
+from fw_analyzer.trace import TraceQuery, TraceResult
+from fw_analyzer.models.rule import FlatRule
+from fw_analyzer.models.object_store import AddressObject, ServiceObject
+from fw_analyzer.models.port_range import PortRange
+from fw_analyzer.parsers import get_parser
+
+
+# ------------------------------------------------------------------
+# 测试辅助
+# ------------------------------------------------------------------
+
+def _make_analysis_result(n_rules: int = 3) -> AnalysisResult:
+    """构造用于测试的 AnalysisResult。"""
+    rules = []
+    for i in range(n_rules):
+        net = IPv4Network(f"10.{i}.0.0/24")
+        rule = FlatRule(
+            vendor="test",
+            raw_rule_id=f"rule-{i}",
+            rule_name=f"test-rule-{i}",
+            seq=i,
+            src_ip=[AddressObject(
+                name=str(net), type="subnet", value=str(net), network=net,
+            )],
+            dst_ip=[AddressObject(
+                name="any", type="any", value="0.0.0.0/0",
+                network=IPv4Network("0.0.0.0/0"),
+            )],
+            services=[ServiceObject(
+                name="tcp/443",
+                protocol="tcp",
+                src_port=PortRange.any(),
+                dst_port=PortRange(443, 443),
+            )],
+            action="permit",
+            enabled=(i % 2 == 0),
+            comment=f"rule {i} comment" if i > 0 else "",
+        )
+        if i == 1:
+            rule.analysis_tags = ["SHADOW:by=rule-0"]
+        rules.append(rule)
+
+    return AnalysisResult(
+        rules=rules,
+        parse_warnings=[],
+        analysis_warnings=[],
+        vendor="test",
+        source_file="test.cfg",
+    )
+
+
+def _make_trace_results() -> list[TraceResult]:
+    q1 = TraceQuery(src_ip="10.0.0.1", dst_ip="8.8.8.8", protocol="tcp", dst_port=443)
+    q2 = TraceQuery(src_ip="172.16.0.1", dst_ip="1.2.3.4", protocol="udp", dst_port=53)
+
+    rule = FlatRule(
+        vendor="test", raw_rule_id="r1", rule_name="permit-https",
+        seq=0, action="permit", enabled=True,
+    )
+
+    return [
+        TraceResult(query=q1, matched=True, matched_rule=rule,
+                    action="permit", match_note=""),
+        TraceResult(query=q2, matched=False, action="no-match",
+                    match_note="无规则命中"),
+    ]
+
+
+# ------------------------------------------------------------------
+# CSV 导出器
+# ------------------------------------------------------------------
+
+class TestCsvExporter:
+    def test_returns_string(self):
+        result = _make_analysis_result()
+        out = CsvExporter().export(result)
+        assert isinstance(out, str)
+
+    def test_has_bom(self):
+        out = CsvExporter().export(_make_analysis_result())
+        assert out.startswith("\ufeff")
+
+    def test_has_header(self):
+        out = CsvExporter().export(_make_analysis_result())
+        # 去掉 BOM
+        clean = out.lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(clean))
+        fieldnames = reader.fieldnames or []
+        assert "rule_id" in fieldnames
+        assert "action" in fieldnames
+        assert "src_ip" in fieldnames
+        assert "dst_ip" in fieldnames
+
+    def test_row_count(self):
+        n = 5
+        result = _make_analysis_result(n_rules=n)
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == n
+
+    def test_action_values(self):
+        result = _make_analysis_result()
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        for row in rows:
+            assert row["action"] in ("permit", "deny", "drop", "reject")
+
+    def test_export_trace_returns_string(self):
+        out = CsvExporter().export_trace(_make_trace_results())
+        assert isinstance(out, str)
+
+    def test_export_trace_row_count(self):
+        results = _make_trace_results()
+        out = CsvExporter().export_trace(results)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == len(results)
+
+    def test_export_trace_matched_field(self):
+        out = CsvExporter().export_trace(_make_trace_results())
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        # 第一条命中，第二条未命中
+        assert rows[0]["matched"] in ("True", "true", "1", True)
+        assert rows[1]["matched"] in ("False", "false", "0", False)
+
+
+# ------------------------------------------------------------------
+# JSON 导出器
+# ------------------------------------------------------------------
+
+class TestJsonExporter:
+    def test_returns_string(self):
+        out = JsonExporter().export(_make_analysis_result())
+        assert isinstance(out, str)
+
+    def test_valid_json(self):
+        out = JsonExporter().export(_make_analysis_result())
+        data = json.loads(out)
+        assert isinstance(data, dict)
+
+    def test_top_level_keys(self):
+        data = json.loads(JsonExporter().export(_make_analysis_result()))
+        assert "vendor" in data
+        assert "rules" in data
+        assert "rule_count" in data
+
+    def test_rules_array(self):
+        n = 4
+        data = json.loads(JsonExporter().export(_make_analysis_result(n_rules=n)))
+        assert len(data["rules"]) == n
+
+    def test_rule_has_expected_fields(self):
+        data = json.loads(JsonExporter().export(_make_analysis_result()))
+        rule = data["rules"][0]
+        for key in ("vendor", "raw_rule_id", "rule_name", "seq", "action",
+                    "src_ip", "dst_ip", "services", "enabled"):
+            assert key in rule, f"缺少字段: {key}"
+
+    def test_export_trace_returns_string(self):
+        out = JsonExporter().export_trace(_make_trace_results())
+        assert isinstance(out, str)
+
+    def test_export_trace_valid_json(self):
+        out = JsonExporter().export_trace(_make_trace_results())
+        data = json.loads(out)
+        assert isinstance(data, list)
+        assert len(data) == 2
+
+    def test_export_trace_matched_field(self):
+        data = json.loads(JsonExporter().export_trace(_make_trace_results()))
+        assert data[0]["matched"] is True
+        assert data[1]["matched"] is False
+
+
+# ------------------------------------------------------------------
+# Markdown 导出器
+# ------------------------------------------------------------------
+
+class TestMarkdownExporter:
+    def test_returns_string(self):
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert isinstance(out, str)
+
+    def test_has_title(self):
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert "# 防火墙规则分析报告" in out
+
+    def test_has_overview_section(self):
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert "## 概览" in out
+
+    def test_has_rules_section(self):
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert "## 规则列表" in out
+
+    def test_shadow_section_present_when_tagged(self):
+        result = _make_analysis_result()
+        # rule-1 已经有 SHADOW 标签
+        out = MarkdownExporter().export(result)
+        assert "## 影子规则" in out
+
+    def test_shadow_section_absent_when_no_shadow(self):
+        result = _make_analysis_result(n_rules=2)
+        # 清除所有标签
+        for r in result.rules:
+            r.analysis_tags = []
+        out = MarkdownExporter().export(result)
+        assert "## 影子规则" not in out
+
+    def test_source_file_in_report(self):
+        result = _make_analysis_result()
+        out = MarkdownExporter().export(result)
+        assert "test.cfg" in out
+
+    def test_export_trace_returns_string(self):
+        out = MarkdownExporter().export_trace(_make_trace_results())
+        assert isinstance(out, str)
+
+    def test_export_trace_has_title(self):
+        out = MarkdownExporter().export_trace(_make_trace_results())
+        assert "# 访问需求 Trace 分析报告" in out
+
+    def test_export_trace_has_detail_section(self):
+        out = MarkdownExporter().export_trace(_make_trace_results())
+        assert "## 详细结果" in out
+
+
+# ------------------------------------------------------------------
+# 使用真实解析结果的集成测试
+# ------------------------------------------------------------------
+
+class TestExportersWithRealParse:
+    def test_csv_from_huawei(self, huawei_cfg):
+        from fw_analyzer.analyzers.engine import AnalysisEngine
+        parse_result = get_parser("huawei").parse(huawei_cfg)
+        result = AnalysisEngine().analyze(parse_result)
+        out = CsvExporter().export(result)
+        assert isinstance(out, str)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == result.rule_count
+
+    def test_json_from_cisco(self, cisco_cfg):
+        from fw_analyzer.analyzers.engine import AnalysisEngine
+        parse_result = get_parser("cisco-asa").parse(cisco_cfg)
+        result = AnalysisEngine().analyze(parse_result)
+        data = json.loads(JsonExporter().export(result))
+        assert data["vendor"] == "cisco-asa"
+
+    def test_markdown_from_paloalto(self, paloalto_cfg):
+        from fw_analyzer.analyzers.engine import AnalysisEngine
+        parse_result = get_parser("paloalto").parse(paloalto_cfg)
+        result = AnalysisEngine().analyze(parse_result)
+        out = MarkdownExporter().export(result)
+        assert "paloalto" in out.lower() or "pan" in out.lower() or "# 防火墙" in out

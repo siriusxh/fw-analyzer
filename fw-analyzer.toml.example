@@ -1,0 +1,92 @@
+# fw-analyzer 配置文件示例
+# 将此文件复制为 fw-analyzer.toml（当前目录）或 ~/.fw-analyzer/config.toml（用户主目录）
+# 加载优先级（高到低）：
+#   1. CLI --config 参数指定路径
+#   2. ./fw-analyzer.toml（当前工作目录）
+#   3. ~/.fw-analyzer/config.toml（用户主目录）
+#   4. 内置默认值（如未找到任何配置文件）
+
+# ============================================================
+# 高危端口列表
+# ============================================================
+# 用于 COMPLIANCE:HIGH_RISK_PORT 合规检查。
+# 若 permit 规则允许访问这些端口，将被标记为告警。
+
+[high_risk_ports]
+
+# TCP 高危端口
+tcp = [
+    20, 21,       # FTP 数据/控制
+    23,           # Telnet
+    25,           # SMTP
+    53,           # DNS (TCP)
+    110,          # POP3
+    143,          # IMAP
+    389,          # LDAP
+    512, 513, 514,# rsh/rexec/rlogin
+    1433,         # MSSQL
+    1521,         # Oracle
+    3306,         # MySQL
+    3389,         # RDP
+    4444,         # Metasploit 默认
+    5432,         # PostgreSQL
+    5900,         # VNC
+    6379,         # Redis
+    27017,        # MongoDB
+]
+
+# UDP 高危端口
+udp = [
+    53,           # DNS
+    69,           # TFTP
+    161, 162,     # SNMP / SNMP Trap
+    514,          # Syslog
+]
+
+# ============================================================
+# 过宽规则检测端口分级
+# ============================================================
+# 当 permit 规则的服务范围包含以下端口时，根据分级产生对应严重度标签：
+#   OVERWIDE:CRITICAL / OVERWIDE:HIGH / OVERWIDE:MEDIUM / OVERWIDE:LOW
+
+[overwide]
+
+# CRITICAL：严重（如 SSH/Telnet/RDP/Metasploit，远程控制类）
+critical_ports = [22, 23, 3389, 4444]
+
+# HIGH：高危（数据库、常见服务组件暴露）
+high_ports = [21, 25, 1433, 3306, 5432, 6379, 27017]
+
+# MEDIUM：中危（邮件、目录服务、远程执行）
+medium_ports = [110, 143, 161, 162, 389, 512, 513, 514]
+
+# LOW：低危（常见但需关注）
+low_ports = [20, 53, 69, 1521, 5900]
+
+# ============================================================
+# 合规检查开关
+# ============================================================
+
+[compliance]
+
+# 检查是否存在 permit any any 规则
+check_permit_any_any = true
+
+# 检查策略末尾是否有明确的 deny all 规则（无则触发 NO_IMPLICIT_DENY 告警）
+check_no_implicit_deny = true
+
+# 检查 permit 规则是否允许明文协议（Telnet/FTP/HTTP 等）
+check_cleartext = true
+
+# 检查 permit 规则是否允许高危端口
+check_high_risk_ports = true
+
+# 检查 permit 规则是否缺少注释/描述
+check_no_comment = true
+
+# 检查是否存在已禁用（disabled）的规则（可能是遗留垃圾规则）
+check_disabled_rules = true
+
+# 明文协议端口列表（用于 CLEARTEXT 检测）
+# 这些端口使用明文传输，建议替换为加密协议
+cleartext_ports = [21, 23, 25, 80, 110, 143, 161, 389, 514]

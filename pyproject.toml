@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "fw-analyzer"
+version = "0.1.0"
+description = "多厂商防火墙配置分析工具：5元组提取、规则质量分析、访问需求命中分析"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+    "openpyxl>=3.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+fw-analyzer = "fw_analyzer.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fw_analyzer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

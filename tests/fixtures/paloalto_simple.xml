@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <devices>
+    <entry name="localhost.localdomain">
+      <vsys>
+        <entry name="vsys1">
+          <address>
+            <entry name="web-server">
+              <ip-netmask>10.0.0.10/32</ip-netmask>
+            </entry>
+            <entry name="internal-net">
+              <ip-netmask>192.168.1.0/24</ip-netmask>
+            </entry>
+            <entry name="dmz-net">
+              <ip-netmask>172.16.0.0/24</ip-netmask>
+            </entry>
+          </address>
+          <address-group>
+            <entry name="internal-grp">
+              <static>
+                <member>internal-net</member>
+                <member>dmz-net</member>
+              </static>
+            </entry>
+          </address-group>
+          <service>
+            <entry name="svc-https">
+              <protocol>
+                <tcp>
+                  <port>443</port>
+                </tcp>
+              </protocol>
+            </entry>
+            <entry name="svc-telnet">
+              <protocol>
+                <tcp>
+                  <port>23</port>
+                </tcp>
+              </protocol>
+            </entry>
+          </service>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="permit-https">
+                  <from><member>trust</member></from>
+                  <to><member>untrust</member></to>
+                  <source><member>internal-grp</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>svc-https</member></service>
+                  <action>allow</action>
+                  <disabled>no</disabled>
+                  <description>Allow HTTPS outbound</description>
+                </entry>
+                <entry name="permit-telnet">
+                  <from><member>any</member></from>
+                  <to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>svc-telnet</member></service>
+                  <action>allow</action>
+                  <disabled>no</disabled>
+                </entry>
+                <entry name="deny-all">
+                  <from><member>any</member></from>
+                  <to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>any</member></service>
+                  <action>deny</action>
+                  <disabled>no</disabled>
+                </entry>
+              </rules>
+            </security>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>
