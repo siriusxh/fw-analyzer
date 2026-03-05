@@ -199,6 +199,7 @@ class FortinetParser(AbstractParser):
             elif keyword == "edit":
                 name = " ".join(tokens[1:]).strip('"') if len(tokens) > 1 else ""
                 sets: dict[str, str] = {}
+                children_in_edit: list[dict] = []
                 i += 1
                 # 收集 set 命令直到 next 或 end
                 while i < len(lines):
@@ -217,26 +218,26 @@ class FortinetParser(AbstractParser):
                         key = inner_tokens[1].lower()
                         val = " ".join(inner_tokens[2:])
                         sets[key] = val
-                    elif inner_kw == "config":
-                        # 嵌套 config（如 config dynamic_mapping）
-                        # 跳过整个嵌套块
-                        depth = 1
                         i += 1
-                        while i < len(lines) and depth > 0:
-                            t = lines[i].strip().split()
-                            if t:
-                                if t[0].lower() == "config":
-                                    depth += 1
-                                elif t[0].lower() == "end":
-                                    depth -= 1
-                            i += 1
-                        continue
-                    i += 1
+                    elif inner_kw == "config":
+                        # 嵌套 config（如 vdom 内的 config firewall address）
+                        # 递归解析而不是跳过
+                        path = inner_tokens[1:]
+                        i += 1
+                        nested_children, i = self._parse_block(lines, i)
+                        children_in_edit.append({
+                            "type": "config",
+                            "path": path,
+                            "children": nested_children,
+                        })
+                    else:
+                        i += 1
 
                 result.append({
                     "type": "edit",
                     "name": name,
                     "sets": sets,
+                    "children": children_in_edit,
                 })
                 # 消耗 next/end
                 if i < len(lines):
@@ -260,15 +261,27 @@ class FortinetParser(AbstractParser):
     def _find_blocks(self, blocks: list[dict], *path_parts: str) -> list[dict]:
         """
         在解析后的块列表中查找匹配路径的 config 块的 children。
+        递归搜索，以支持 config vdom / edit root 等顶层包装。
 
         例如：_find_blocks(blocks, "firewall", "address")
         """
+        search = [p.lower() for p in path_parts]
         for block in blocks:
             if block["type"] == "config":
                 bp = [p.lower() for p in block["path"]]
-                search = [p.lower() for p in path_parts]
                 if bp == search:
                     return block["children"]
+                # 递归搜索 children（config 块的 children 包含 edit 和 config 子块）
+                found = self._find_blocks(block["children"], *path_parts)
+                if found:
+                    return found
+            elif block["type"] == "edit":
+                # edit 块可能含有嵌套 config（如 vdom 中的 edit root）
+                nested = block.get("children", [])
+                if nested:
+                    found = self._find_blocks(nested, *path_parts)
+                    if found:
+                        return found
         return []
 
     # ------------------------------------------------------------------

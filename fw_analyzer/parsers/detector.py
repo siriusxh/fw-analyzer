@@ -15,10 +15,13 @@ import re
 _VENDOR_SIGNATURES: list[tuple[str, list[str]]] = [
     # Palo Alto：XML 结构特征
     ("paloalto", [
-        r"<config\s+version=",
-        r"<devices>.*<entry\s+name=",
-        r"<security>.*<rules>",
+        r"<config(\s+version=|\s*>)",
+        r"<devices>",
+        r"<entry\s+name=",
+        r"<security>\s*<rules>",
         r"xmlns.*paloaltonetworks",
+        r"<ip-netmask>",
+        r"<vsys>",
     ]),
     # Cisco ASA：ASA 特有关键字
     ("cisco-asa", [

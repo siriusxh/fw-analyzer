@@ -63,18 +63,24 @@ class TraceQuery:
 
     @staticmethod
     def _normalize_ip(ip: str) -> str:
-        """将 IP 规范化为 CIDR 格式。"""
+        """将 IP 规范化为 CIDR 格式。"any" 保持原样。"""
         ip = ip.strip()
+        if ip.lower() == "any":
+            return "any"
         if "/" not in ip:
             ip = f"{ip}/32"
         return ip
 
     @property
     def src_network(self) -> IPv4Network:
+        if self.src_ip.lower() == "any":
+            return IPv4Network("0.0.0.0/0")
         return parse_ipv4_network(self.src_ip)
 
     @property
     def dst_network(self) -> IPv4Network:
+        if self.dst_ip.lower() == "any":
+            return IPv4Network("0.0.0.0/0")
         return parse_ipv4_network(self.dst_ip)
 
     def to_dict(self) -> dict:

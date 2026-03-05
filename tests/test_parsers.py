@@ -29,7 +29,7 @@ class TestDetectVendor:
         assert detect_vendor(fortinet_cfg) == "fortinet"
 
     def test_detect_unknown(self):
-        assert detect_vendor("random text that matches nothing") is None
+        assert detect_vendor("random text that matches nothing") == "unknown"
 
 
 # ------------------------------------------------------------------

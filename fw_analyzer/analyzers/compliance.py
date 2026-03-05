@@ -40,14 +40,16 @@ class ComplianceAnalyzer:
         """
         comp = config.compliance
         global_warnings: list[Warning] = []
+        disabled_count = 0
 
         for rule in rules:
             if not rule.enabled:
-                # DISABLED_RULES
+                # DISABLED_RULES — tag on the rule
                 if comp.check_disabled_rules:
                     tag = "COMPLIANCE:DISABLED_RULES"
                     if tag not in rule.analysis_tags:
                         rule.analysis_tags.append(tag)
+                    disabled_count += 1
                 continue
 
             if rule.action != "permit":
@@ -92,6 +94,14 @@ class ComplianceAnalyzer:
                     severity=WarningSeverity.HIGH,
                 ))
 
+        # DISABLED_RULES（文件级别汇总告警）
+        if comp.check_disabled_rules and disabled_count > 0:
+            global_warnings.append(Warning(
+                code="COMPLIANCE:DISABLED_RULES",
+                message=f"存在 {disabled_count} 条禁用规则，可能是遗留配置，建议清理。",
+                severity=WarningSeverity.LOW,
+            ))
+
         return global_warnings
 
     # ------------------------------------------------------------------
@@ -102,7 +112,7 @@ class ComplianceAnalyzer:
         """判断规则是否为 permit any any（源/目的均为 any，服务为 any）。"""
         src_any = self._addr_is_any(rule.src_ip)
         dst_any = self._addr_is_any(rule.dst_ip)
-        svc_any = not rule.services  # 空服务列表 = any
+        svc_any = self._svc_is_any(rule.services)
 
         return src_any and dst_any and svc_any
 
@@ -159,7 +169,7 @@ class ComplianceAnalyzer:
             if rule.action in ("deny", "drop", "reject"):
                 src_any = self._addr_is_any(rule.src_ip)
                 dst_any = self._addr_is_any(rule.dst_ip)
-                svc_any = not rule.services
+                svc_any = self._svc_is_any(rule.services)
                 if src_any and dst_any and svc_any:
                     return True
         return False
@@ -174,3 +184,17 @@ class ComplianceAnalyzer:
             if a.network and str(a.network) == "0.0.0.0/0":
                 return True
         return False
+
+    @staticmethod
+    def _svc_is_any(services: list[ServiceObject]) -> bool:
+        """判断服务列表是否等价于 any（空列表或全部为 any 协议且端口全范围）。"""
+        if not services:
+            return True
+        for svc in services:
+            proto = svc.protocol.lower()
+            if proto not in ("any", "ip"):
+                return False
+            # 检查端口范围是否覆盖全部（0-65535）
+            if svc.dst_port.low != 0 or svc.dst_port.high != 65535:
+                return False
+        return True
