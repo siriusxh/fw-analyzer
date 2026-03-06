@@ -86,6 +86,8 @@ class AnalyzeResponse(BaseModel):
     source_file: str
     rule_count: int
     tagged_rule_count: int
+    issue_rule_count: int
+    info_rule_count: int
     parse_warnings: List[WarningSchema]
     analysis_warnings: List[WarningSchema]
     rules: List[RuleSchema]

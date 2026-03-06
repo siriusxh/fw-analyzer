@@ -66,23 +66,23 @@ def is_contiguous_wildcard(wildcard: str) -> bool:
     """
     检测 Wildcard Mask 是否连续（可安全转换为 CIDR）。
 
-    连续 Wildcard 的特征：其按位取反（得到子网掩码）满足：
-      (subnet_mask_int + 1) & subnet_mask_int == 0
-    即子网掩码是连续的1后跟连续的0。
+    连续 Wildcard 的特征：其二进制表示为从 LSB 开始的连续 1，
+    即 wildcard_int 的形式为 0...01...1（等于 2^k - 1）。
+    位运算判断：(wc_int + 1) & wc_int == 0。
 
     示例：
-      0.0.0.255   → 取反 = 255.255.255.0  → 连续 ✓
-      0.0.255.0   → 取反 = 255.255.0.255  → 不连续 ✗
-      0.0.0.0     → 取反 = 255.255.255.255 → 连续 ✓（/0 即 any）
+      0.0.0.255   → 0x000000FF → (0x100) & 0xFF = 0  → 连续 ✓
+      0.0.3.255   → 0x000003FF → (0x400) & 0x3FF = 0  → 连续 ✓
+      0.0.255.0   → 0x0000FF00 → (0xFF01) & 0xFF00 ≠ 0 → 不连续 ✗
+      0.0.0.0     → 0x00000000 → (0x1) & 0x0 = 0      → 连续 ✓（/32）
     """
     try:
         wc_int = int(IPv4Address(wildcard))
     except ValueError:
         return False
 
-    subnet_int = wc_int ^ 0xFFFFFFFF
-    # 合法子网掩码：(m + 1) & m == 0，且 m != 0 或 m == 全0
-    return (subnet_int + 1) & subnet_int == 0
+    # 连续 wildcard 的二进制全是低位连续 1：(n + 1) & n == 0
+    return (wc_int + 1) & wc_int == 0
 
 
 def wildcard_to_network(ip: str, wildcard: str) -> IPv4Network:

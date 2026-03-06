@@ -20,6 +20,17 @@ from .redundancy import RedundancyAnalyzer
 from .overwidth import OverwidthAnalyzer
 from .compliance import ComplianceAnalyzer
 
+# 信息性标签前缀：仅提示但不代表规则存在质量问题
+INFORMATIONAL_TAG_PREFIXES = (
+    "COMPLIANCE:NO_COMMENT",
+    "COMPLIANCE:DISABLED_RULES",
+)
+
+
+def _is_informational(tag: str) -> bool:
+    """判断标签是否为信息性（非问题）标签。"""
+    return tag.startswith(INFORMATIONAL_TAG_PREFIXES)
+
 
 @dataclass
 class AnalysisResult:
@@ -42,7 +53,24 @@ class AnalysisResult:
 
     @property
     def tagged_rule_count(self) -> int:
+        """所有带标签的规则数（含信息性标签），保留向后兼容。"""
         return sum(1 for r in self.rules if r.analysis_tags)
+
+    @property
+    def issue_rule_count(self) -> int:
+        """存在真正质量问题的规则数（排除信息性标签）。"""
+        return sum(
+            1 for r in self.rules
+            if any(not _is_informational(t) for t in r.analysis_tags)
+        )
+
+    @property
+    def info_rule_count(self) -> int:
+        """仅含信息性标签的规则数（如无注释、已禁用）。"""
+        return sum(
+            1 for r in self.rules
+            if r.analysis_tags and all(_is_informational(t) for t in r.analysis_tags)
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +78,8 @@ class AnalysisResult:
             "source_file": self.source_file,
             "rule_count": self.rule_count,
             "tagged_rule_count": self.tagged_rule_count,
+            "issue_rule_count": self.issue_rule_count,
+            "info_rule_count": self.info_rule_count,
             "parse_warnings": [w.to_dict() for w in self.parse_warnings],
             "analysis_warnings": [w.to_dict() for w in self.analysis_warnings],
             "rules": [r.to_dict() for r in self.rules],

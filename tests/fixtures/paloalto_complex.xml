@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <devices>
+    <entry name="localhost.localdomain">
+      <vsys>
+        <entry name="vsys1">
+          <!-- 地址对象 -->
+          <address>
+            <entry name="host-a">
+              <ip-netmask>10.1.1.1/32</ip-netmask>
+            </entry>
+            <entry name="host-b">
+              <ip-netmask>10.1.1.2/32</ip-netmask>
+            </entry>
+            <entry name="subnet-c">
+              <ip-netmask>172.16.0.0/24</ip-netmask>
+            </entry>
+            <entry name="range-d">
+              <ip-range>192.168.1.1-192.168.1.100</ip-range>
+            </entry>
+            <entry name="fqdn-server">
+              <fqdn>www.example.com</fqdn>
+            </entry>
+          </address>
+
+          <!-- 嵌套地址组：4层 inner → mid → outer → deep -->
+          <address-group>
+            <entry name="inner-grp">
+              <static>
+                <member>host-a</member>
+                <member>host-b</member>
+              </static>
+            </entry>
+            <entry name="mid-grp">
+              <static>
+                <member>inner-grp</member>
+                <member>subnet-c</member>
+              </static>
+            </entry>
+            <entry name="outer-grp">
+              <static>
+                <member>mid-grp</member>
+                <member>range-d</member>
+              </static>
+            </entry>
+            <entry name="deep-grp">
+              <static>
+                <member>outer-grp</member>
+              </static>
+            </entry>
+          </address-group>
+
+          <!-- 服务对象 -->
+          <service>
+            <entry name="svc-https">
+              <protocol>
+                <tcp>
+                  <port>443</port>
+                </tcp>
+              </protocol>
+            </entry>
+            <entry name="svc-ssh">
+              <protocol>
+                <tcp>
+                  <port>22</port>
+                </tcp>
+              </protocol>
+            </entry>
+            <entry name="svc-dns-tcp">
+              <protocol>
+                <tcp>
+                  <port>53</port>
+                </tcp>
+              </protocol>
+            </entry>
+          </service>
+
+          <!-- 服务组 -->
+          <service-group>
+            <entry name="web-svcs">
+              <members>
+                <member>svc-https</member>
+                <member>svc-ssh</member>
+              </members>
+            </entry>
+          </service-group>
+
+          <rulebase>
+            <security>
+              <rules>
+                <!-- 规则1：引用 deep-grp（触发 DEEP_NESTING 警告） -->
+                <entry name="permit-deep">
+                  <from><member>trust</member></from>
+                  <to><member>untrust</member></to>
+                  <source><member>deep-grp</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>svc-https</member></service>
+                  <action>allow</action>
+                  <disabled>no</disabled>
+                  <description>Allow deep nested group to HTTPS</description>
+                </entry>
+
+                <!-- 规则2：引用 FQDN 地址 -->
+                <entry name="permit-fqdn">
+                  <from><member>trust</member></from>
+                  <to><member>untrust</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>fqdn-server</member></destination>
+                  <service><member>svc-https</member></service>
+                  <action>allow</action>
+                  <disabled>no</disabled>
+                </entry>
+
+                <!-- 规则3：禁用规则 -->
+                <entry name="disabled-ssh">
+                  <from><member>any</member></from>
+                  <to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>svc-ssh</member></service>
+                  <action>allow</action>
+                  <disabled>yes</disabled>
+                  <description>SSH disabled for security</description>
+                </entry>
+
+                <!-- 规则4：引用服务组 -->
+                <entry name="permit-admin">
+                  <from><member>trust</member></from>
+                  <to><member>dmz</member></to>
+                  <source><member>inner-grp</member></source>
+                  <destination><member>subnet-c</member></destination>
+                  <service><member>web-svcs</member></service>
+                  <action>allow</action>
+                  <disabled>no</disabled>
+                </entry>
+
+                <!-- 规则5：deny-all -->
+                <entry name="deny-all">
+                  <from><member>any</member></from>
+                  <to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>any</member></destination>
+                  <service><member>any</member></service>
+                  <action>deny</action>
+                  <disabled>no</disabled>
+                </entry>
+              </rules>
+            </security>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>

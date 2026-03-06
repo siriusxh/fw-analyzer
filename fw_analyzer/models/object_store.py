@@ -315,7 +315,8 @@ class ObjectStore:
                 name="any", protocol="any",
                 src_port=PortRange.any(), dst_port=PortRange.any(),
             )]
-        if name_lower in ("tcp", "udp", "icmp", "tcp-udp", "gre", "esp", "ah"):
+        if name_lower in ("tcp", "udp", "icmp", "tcp-udp", "gre", "esp", "ah",
+                         "ipinip", "ospf", "igmp", "sctp"):
             return [ServiceObject(
                 name=name_lower, protocol=name_lower,
                 src_port=PortRange.any(), dst_port=PortRange.any(),

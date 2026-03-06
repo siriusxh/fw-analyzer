@@ -42,7 +42,7 @@ def _common_options(f):
         default="auto",
         show_default=True,
         type=click.Choice(
-            ["auto", "huawei", "cisco-asa", "paloalto", "fortinet"],
+            ["auto", "huawei", "cisco-asa", "paloalto", "paloalto-set", "fortinet"],
             case_sensitive=False,
         ),
         help="厂商类型（auto 表示自动识别）。",
@@ -339,7 +339,8 @@ def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, 
     # 打印统计信息到 stderr
     click.echo(
         f"\n规则总数: {result.rule_count}  "
-        f"有问题规则: {result.tagged_rule_count}  "
+        f"问题规则: {result.issue_rule_count}  "
+        f"信息性标记: {result.info_rule_count}  "
         f"合规告警: {len(result.analysis_warnings)}",
         err=True,
     )
@@ -381,7 +382,7 @@ def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, 
     help="从 CSV 文件批量读取查询（格式：src_ip,dst_ip,protocol,dst_port[,src_port][,label]）。",
 )
 @click.option("--vendor", "-V", default="auto",
-              type=click.Choice(["auto", "huawei", "cisco-asa", "paloalto", "fortinet"],
+              type=click.Choice(["auto", "huawei", "cisco-asa", "paloalto", "paloalto-set", "fortinet"],
                                 case_sensitive=False),
               help="厂商类型。")
 @click.option("--config", "-c", default=None, metavar="FILE", help="配置文件路径。")

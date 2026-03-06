@@ -61,6 +61,8 @@ def analyze_config(request: AnalyzeRequest) -> AnalyzeResponse:
         source_file=result.source_file,
         rule_count=result.rule_count,
         tagged_rule_count=result.tagged_rule_count,
+        issue_rule_count=result.issue_rule_count,
+        info_rule_count=result.info_rule_count,
         parse_warnings=[
             WarningSchema(code=w.code, message=w.message, severity=w.severity.value)
             for w in result.parse_warnings

@@ -13,6 +13,15 @@ import re
 
 # 各厂商的特征检测规则（按优先级排序）
 _VENDOR_SIGNATURES: list[tuple[str, list[str]]] = [
+    # Palo Alto set 格式：set 命令行特征（优先于 XML）
+    ("paloalto-set", [
+        r"^set\s+rulebase\s+security\s+rules\s+",
+        r"^set\s+address\s+\S+\s+ip-netmask\s+",
+        r"^set\s+address-group\s+\S+\s+static\s+",
+        r"^set\s+service\s+\S+\s+protocol\s+(tcp|udp)",
+        r"^set\s+deviceconfig\s+system\s+",
+        r"^set\s+network\s+interface\s+",
+    ]),
     # Palo Alto：XML 结构特征
     ("paloalto", [
         r"<config(\s+version=|\s*>)",

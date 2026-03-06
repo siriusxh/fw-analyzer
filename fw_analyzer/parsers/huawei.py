@@ -48,12 +48,24 @@ HUAWEI_BUILTIN_SERVICES: dict[str, tuple[str, int, int]] = {
     "smtp":     ("tcp", 25, 25),
     "dns":      ("udp", 53, 53),
     "snmp":     ("udp", 161, 161),
+    "snmptrap": ("udp", 162, 162),
+    "ntp":      ("udp", 123, 123),
     "rdp":      ("tcp", 3389, 3389),
     "mysql":    ("tcp", 3306, 3306),
     "mssql":    ("tcp", 1433, 1433),
     "ping":     ("icmp", 0, 0),
     "icmp":     ("icmp", 0, 0),
 }
+
+# 华为配置中的名称可以是不含空格的单词，也可以是双引号括起的含空格字符串。
+# 此正则捕获两种格式：(?:"([^"]+)"|(\S+))
+# 使用 _extract_name() 辅助函数取出实际名称。
+_NAME_RE = r'(?:"([^"]+)"|(\S+))'
+
+
+def _extract_name(m: re.Match, group_quoted: int, group_bare: int) -> str:
+    """从匹配中提取名称（优先 quoted，fallback bare）。"""
+    return m.group(group_quoted) or m.group(group_bare)
 
 
 class HuaweiParser(AbstractParser):
@@ -70,6 +82,7 @@ class HuaweiParser(AbstractParser):
     def _parse_objects(self, text: str) -> None:
         """解析华为配置中的所有对象定义。"""
         self._parse_address_groups(text)
+        self._parse_address_sets(text)
         self._parse_service_groups(text)
         self._parse_ip_service_sets(text)
         # 注册内置服务
@@ -118,6 +131,95 @@ class HuaweiParser(AbstractParser):
 
             if members:
                 self.object_store.add_address_group(group_name, members)
+
+    def _parse_address_sets(self, text: str) -> None:
+        """
+        解析 ip address-set 块（USG6000/USG9000 新版格式）。
+
+        格式 type object（叶子，包含 IP 地址）：
+          ip address-set <name> type object
+            address <idx> <ip> mask <prefix_int_or_dotted_mask>
+            address <idx> <ip> <bare_0>          # bare 0 = /32
+            address <idx> range <start> <end>
+
+        格式 type group（组，包含对其他 address-set 的引用）：
+          ip address-set <name> type group
+            address <idx> address-set <ref_name>
+        """
+        # 提取所有 ip address-set 块（以 # 或下一个 ip address-set / ip service-set 结束）
+        block_pattern = re.compile(
+            r"^ip\s+address-set\s+" + _NAME_RE + r"\s+type\s+(object|group)"
+            r"(.*?)(?=^ip\s+(?:address-set|service-set)\s|\Z|^#$)",
+            re.MULTILINE | re.DOTALL,
+        )
+        for m in block_pattern.finditer(text):
+            set_name = m.group(1) or m.group(2)
+            set_type = m.group(3)  # "object" or "group"
+            block = m.group(4)
+
+            if set_type == "group":
+                # type group: 包含对其他 address-set 的引用
+                members: list[str] = []
+                for ref_m in re.finditer(
+                    r"^\s+address\s+\d+\s+address-set\s+" + _NAME_RE,
+                    block, re.MULTILINE,
+                ):
+                    members.append(ref_m.group(1) or ref_m.group(2))
+                if members:
+                    self.object_store.add_address_group(set_name, members)
+            else:
+                # type object: 包含具体 IP 地址
+                members_obj: list[str] = []
+
+                # address <idx> <ip> mask <prefix_int_or_dotted>
+                for am in re.finditer(
+                    r"^\s+address\s+\d+\s+(\d+\.\d+\.\d+\.\d+)\s+mask\s+(\S+)",
+                    block, re.MULTILINE,
+                ):
+                    ip = am.group(1)
+                    mask_val = am.group(2)
+                    obj_name = f"{set_name}_{ip}"
+                    if "." in mask_val:
+                        # 点分掩码（如 255.255.255.0）— address-set 中为 subnet mask
+                        self.object_store.add_address_object(
+                            obj_name, "subnet", ip, mask_val,
+                        )
+                    else:
+                        # 整数前缀（如 32、24）
+                        self.object_store.add_address_object(
+                            obj_name, "subnet", f"{ip}/{mask_val}",
+                        )
+                    members_obj.append(obj_name)
+
+                # address <idx> <ip> 0  （bare 0 = host /32）
+                for am in re.finditer(
+                    r"^\s+address\s+\d+\s+(\d+\.\d+\.\d+\.\d+)\s+0\s*$",
+                    block, re.MULTILINE,
+                ):
+                    ip = am.group(1)
+                    obj_name = f"{set_name}_{ip}"
+                    if obj_name not in [m for m in members_obj]:
+                        self.object_store.add_address_object(
+                            obj_name, "subnet", f"{ip}/32",
+                        )
+                        members_obj.append(obj_name)
+
+                # address <idx> range <start_ip> <end_ip>
+                for am in re.finditer(
+                    r"^\s+address\s+\d+\s+range\s+"
+                    r"(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)",
+                    block, re.MULTILINE,
+                ):
+                    start_ip = am.group(1)
+                    end_ip = am.group(2)
+                    obj_name = f"{set_name}_{start_ip}-{end_ip}"
+                    self.object_store.add_address_object(
+                        obj_name, "range", f"{start_ip}-{end_ip}",
+                    )
+                    members_obj.append(obj_name)
+
+                if members_obj:
+                    self.object_store.add_address_group(set_name, members_obj)
 
     def _parse_service_groups(self, text: str) -> None:
         """
@@ -170,12 +272,13 @@ class HuaweiParser(AbstractParser):
             service 0 protocol tcp destination-port 0 to 65535
         """
         block_pattern = re.compile(
-            r"^ip\s+service-set\s+(\S+)\s+type\s+object(.*?)(?=^ip\s+service-set\s|\Z)",
+            r"^ip\s+service-set\s+" + _NAME_RE + r"\s+type\s+object"
+            r"(.*?)(?=^ip\s+service-set\s|\Z)",
             re.MULTILINE | re.DOTALL,
         )
         for m in block_pattern.finditer(text):
-            set_name = m.group(1)
-            block = m.group(2)
+            set_name = m.group(1) or m.group(2)
+            block = m.group(3)
             members: list[str] = []
 
             svc_pattern = re.compile(
@@ -243,52 +346,55 @@ class HuaweiParser(AbstractParser):
         """
         rules: list[FlatRule] = []
 
-        # 找到 security-policy 块
-        sp_match = re.search(
+        # 找到所有 security-policy 块（配置中可能有多个）
+        sp_blocks: list[str] = []
+        for sp_match in re.finditer(
             r"^security-policy$(.*?)(?=^\S|\Z)",
             text, re.MULTILINE | re.DOTALL,
-        )
-        if not sp_match:
+        ):
+            sp_blocks.append(sp_match.group(1))
+
+        if not sp_blocks:
             return rules
 
-        sp_block = sp_match.group(1)
         seq = 0
 
-        # 提取每个 rule 块
-        rule_pattern = re.compile(
-            r"^\s+rule\s+name\s+(\S+)(.*?)(?=^\s+rule\s+name\s+|\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        for rm in rule_pattern.finditer(sp_block):
-            rule_name = rm.group(1)
-            rule_block = rm.group(2)
-
-            src_zone = self._extract_value(rule_block, r"source-zone\s+(\S+)")
-            dst_zone = self._extract_value(rule_block, r"destination-zone\s+(\S+)")
-            action_str = self._extract_value(rule_block, r"action\s+(permit|deny)")
-            action = self._normalize_action(action_str or "deny")
-            comment = self._extract_value(rule_block, r'description\s+"?([^"\n]+)"?') or ""
-            enabled = "dis " not in rule_block.lower() and "undo rule" not in rule_block.lower()
-
-            src_addrs = self._parse_address_field(rule_block, "source-address")
-            dst_addrs = self._parse_address_field(rule_block, "destination-address")
-            services = self._parse_service_field(rule_block)
-
-            rule = self._make_rule(
-                raw_rule_id=rule_name,
-                rule_name=rule_name,
-                seq=seq,
-                src_ip=src_addrs,
-                dst_ip=dst_addrs,
-                services=services,
-                action=action,
-                src_zone=src_zone or "",
-                dst_zone=dst_zone or "",
-                enabled=enabled,
-                comment=comment,
+        for sp_block in sp_blocks:
+            # 提取每个 rule 块
+            rule_pattern = re.compile(
+                r"^\s+rule\s+name\s+(\S+)(.*?)(?=^\s+rule\s+name\s+|\Z)",
+                re.MULTILINE | re.DOTALL,
             )
-            rules.append(rule)
-            seq += 1
+            for rm in rule_pattern.finditer(sp_block):
+                rule_name = rm.group(1)
+                rule_block = rm.group(2)
+
+                src_zone = self._extract_value(rule_block, r"source-zone\s+(\S+)")
+                dst_zone = self._extract_value(rule_block, r"destination-zone\s+(\S+)")
+                action_str = self._extract_value(rule_block, r"action\s+(permit|deny)")
+                action = self._normalize_action(action_str or "deny")
+                comment = self._extract_value(rule_block, r'description\s+"?([^"\n]+)"?') or ""
+                enabled = "dis " not in rule_block.lower() and "undo rule" not in rule_block.lower()
+
+                src_addrs = self._parse_address_field(rule_block, "source-address")
+                dst_addrs = self._parse_address_field(rule_block, "destination-address")
+                services = self._parse_service_field(rule_block)
+
+                rule = self._make_rule(
+                    raw_rule_id=rule_name,
+                    rule_name=rule_name,
+                    seq=seq,
+                    src_ip=src_addrs,
+                    dst_ip=dst_addrs,
+                    services=services,
+                    action=action,
+                    src_zone=src_zone or "",
+                    dst_zone=dst_zone or "",
+                    enabled=enabled,
+                    comment=comment,
+                )
+                rules.append(rule)
+                seq += 1
 
         return rules
 
@@ -355,11 +461,17 @@ class HuaweiParser(AbstractParser):
         """
         解析老版 ACL 格式：
           acl number <num>
-            rule <id> (permit|deny) (ip|tcp|udp|icmp)
-              source <ip> <wildcard> | any
-              destination <ip> <wildcard> | any
+            rule <id> (permit|deny) [protocol]
+              source <ip> <wildcard> | source address-set <name> | any
+              destination <ip> <wildcard> | destination address-set <name> | any
               [source-port eq/range ...]
               [destination-port eq/range ...]
+              [logging]
+
+        支持三种子格式：
+          1. 基本 ACL（无 protocol）: rule 5 permit source 10.0.0.1 0 logging
+          2. 扩展 ACL: rule 5 permit tcp source 10.0.0.0 0.0.3.255 destination ...
+          3. address-set 引用: rule 85 permit tcp source address-set <name> ...
         """
         rules: list[FlatRule] = []
         seq = 0
@@ -372,31 +484,26 @@ class HuaweiParser(AbstractParser):
             acl_id = bm.group(1)
             block = bm.group(2)
 
-            # 单行规则格式（扩展 ACL）
-            rule_pattern = re.compile(
-                r"^\s+rule\s+(\d+)\s+(permit|deny)\s+(\S+)"
-                r"(?:\s+source\s+(\S+)(?:\s+(\S+))?)?"
-                r"(?:\s+destination\s+(\S+)(?:\s+(\S+))?)?",
+            # 匹配每条 rule 行
+            rule_line_pattern = re.compile(
+                r"^\s+rule\s+(\d+)\s+(permit|deny)\s+(.+?)\s*$",
                 re.MULTILINE,
             )
-            for rm in rule_pattern.finditer(block):
-                rule_id = f"acl{acl_id}-rule{rm.group(1)}"
+            for rm in rule_line_pattern.finditer(block):
+                rule_num = rm.group(1)
+                rule_id = f"acl{acl_id}-rule{rule_num}"
                 action = self._normalize_action(rm.group(2))
-                proto = rm.group(3).lower()
+                rest = rm.group(3)  # 剩余内容
 
-                src_ip_str = rm.group(4) or "any"
-                src_mask = rm.group(5)
-                dst_ip_str = rm.group(6) or "any"
-                dst_mask = rm.group(7)
-
-                src_addrs = self._parse_acl_address(src_ip_str, src_mask, rule_id, "src")
-                dst_addrs = self._parse_acl_address(dst_ip_str, dst_mask, rule_id, "dst")
+                proto, src_addrs, dst_addrs, dst_port = self._parse_acl_rule_body(
+                    rest, rule_id
+                )
 
                 svc = ServiceObject(
                     name=proto,
                     protocol=proto if proto != "ip" else "any",
                     src_port=PortRange.any(),
-                    dst_port=PortRange.any(),
+                    dst_port=dst_port,
                 )
 
                 rule = self._make_rule(
@@ -413,6 +520,80 @@ class HuaweiParser(AbstractParser):
 
         return rules
 
+    def _parse_acl_rule_body(
+        self, body: str, rule_id: str
+    ) -> tuple[str, list[AddressObject], list[AddressObject], PortRange]:
+        """
+        解析 ACL 规则行的 action 之后的部分。
+
+        返回 (protocol, src_addrs, dst_addrs, dst_port)。
+        """
+        # 剥离尾部 logging 关键字
+        body = re.sub(r"\s+logging\s*$", "", body)
+
+        # 检测 protocol：如果 body 以已知协议名开头，提取它
+        proto_match = re.match(
+            r"(ip|tcp|udp|icmp|ipinip|gre|ospf|igmp)\s+", body, re.IGNORECASE,
+        )
+        if proto_match:
+            proto = proto_match.group(1).lower()
+            body = body[proto_match.end():]
+        else:
+            proto = "ip"
+
+        src_addrs: list[AddressObject] = self.object_store.resolve_address("any")
+        dst_addrs: list[AddressObject] = self.object_store.resolve_address("any")
+        dst_port = PortRange.any()
+
+        # 解析 source 部分
+        src_set_m = re.search(r"source\s+address-set\s+(\S+)", body)
+        src_ip_m = re.search(r"source\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", body)
+        if src_set_m:
+            src_addrs = self.object_store.resolve_address(src_set_m.group(1))
+        elif src_ip_m:
+            src_addrs = self._parse_acl_address(
+                src_ip_m.group(1), src_ip_m.group(2), rule_id, "src"
+            )
+
+        # 解析 destination 部分
+        dst_set_m = re.search(r"destination\s+address-set\s+(\S+)", body)
+        dst_ip_m = re.search(
+            r"destination\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", body,
+        )
+        if dst_set_m:
+            dst_addrs = self.object_store.resolve_address(dst_set_m.group(1))
+        elif dst_ip_m:
+            dst_addrs = self._parse_acl_address(
+                dst_ip_m.group(1), dst_ip_m.group(2), rule_id, "dst"
+            )
+
+        # 解析 destination-port
+        dp_eq_m = re.search(r"destination-port\s+eq\s+(\S+)", body)
+        dp_range_m = re.search(r"destination-port\s+range\s+(\d+)\s+(\d+)", body)
+        if dp_eq_m:
+            port_val = dp_eq_m.group(1)
+            port_num = self._resolve_port_name(port_val)
+            dst_port = PortRange(port_num, port_num)
+        elif dp_range_m:
+            dst_port = PortRange(int(dp_range_m.group(1)), int(dp_range_m.group(2)))
+
+        return proto, src_addrs, dst_addrs, dst_port
+
+    @staticmethod
+    def _resolve_port_name(port_str: str) -> int:
+        """将端口名或数字字符串转换为整数。"""
+        try:
+            return int(port_str)
+        except ValueError:
+            # 华为常见端口名映射
+            known_ports = {
+                "ftp-data": 20, "ftp": 21, "ssh": 22, "telnet": 23,
+                "smtp": 25, "dns": 53, "http": 80, "pop3": 110,
+                "sunrpc": 111, "bgp": 179, "https": 443, "mssql": 1433,
+                "mysql": 3306, "rdp": 3389,
+            }
+            return known_ports.get(port_str.lower(), 0)
+
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
@@ -426,8 +607,9 @@ class HuaweiParser(AbstractParser):
         支持：
           source-address any
           source-address address-group <grp>
+          source-address address-set <set>      （新版 USG6000 格式）
           source-address ip-address <ip> <mask>/<prefix>
-          source-address <ip> <mask>  （部分简写格式）
+          source-address <ip> mask <mask>        （内联 IP + mask 格式）
         """
         addrs: list[AddressObject] = []
 
@@ -438,6 +620,12 @@ class HuaweiParser(AbstractParser):
         # address-group 引用（可多个）
         for m in re.finditer(rf"{keyword}\s+address-group\s+(\S+)", block):
             addrs.extend(self.object_store.resolve_address(m.group(1)))
+
+        # address-set 引用（可多个，USG6000 新版格式，支持引号）
+        for m in re.finditer(
+            rf"{keyword}\s+address-set\s+" + _NAME_RE, block,
+        ):
+            addrs.extend(self.object_store.resolve_address(m.group(1) or m.group(2)))
 
         # ip-address 直接指定
         for m in re.finditer(
@@ -455,6 +643,17 @@ class HuaweiParser(AbstractParser):
                 self.object_store.add_address_object(obj_name, "subnet", ip, mask)
             addrs.extend(self.object_store.resolve_address(obj_name))
 
+        # 内联 IP + mask 格式：source-address <ip> mask <dotted_mask>
+        for m in re.finditer(
+            rf"{keyword}\s+(\d+\.\d+\.\d+\.\d+)\s+mask\s+(\d+\.\d+\.\d+\.\d+)",
+            block,
+        ):
+            ip = m.group(1)
+            mask = m.group(2)
+            obj_name = f"inline_{ip}"
+            self.object_store.add_address_object(obj_name, "subnet", ip, mask)
+            addrs.extend(self.object_store.resolve_address(obj_name))
+
         return addrs if addrs else self.object_store.resolve_address("any")
 
     def _parse_service_field(self, block: str) -> list[ServiceObject]:
@@ -463,23 +662,34 @@ class HuaweiParser(AbstractParser):
 
         支持：
           service any
-          service <name> [<name> ...]
+          service <name>                     （每行一个服务名）
+          service "<name with spaces>"       （引号名称）
           service service-set <name>
+          service protocol <proto> ...       （ip service-set 内联格式，不在此处理）
+
+        注意：一个规则块中可以有多行 service，需要用 finditer 遍历所有行。
         """
         services: list[ServiceObject] = []
 
-        if re.search(r"service\s+any", block):
+        if re.search(r"^\s+service\s+any\s*$", block, re.MULTILINE):
             return self.object_store.resolve_service("any")
 
         # service-set 引用
-        for m in re.finditer(r"service\s+service-set\s+(\S+)", block):
+        for m in re.finditer(r"^\s+service\s+service-set\s+(\S+)", block, re.MULTILINE):
             services.extend(self.object_store.resolve_service(m.group(1)))
 
-        # 直接服务名（可多个空格分隔）
-        svc_line = re.search(r"^\s+service\s+(?!service-set|any)(.+)$", block, re.MULTILINE)
-        if svc_line:
-            for name in svc_line.group(1).split():
-                services.extend(self.object_store.resolve_service(name))
+        # 引号名称服务：service "name with spaces"
+        for m in re.finditer(
+            r'^\s+service\s+"([^"]+)"', block, re.MULTILINE,
+        ):
+            services.extend(self.object_store.resolve_service(m.group(1)))
+
+        # 直接服务名（排除 service-set / any / protocol / 引号名称）
+        for svc_line in re.finditer(
+            r'^\s+service\s+(?!service-set\s|any\s|any$|protocol\s|")(\S+)',
+            block, re.MULTILINE,
+        ):
+            services.extend(self.object_store.resolve_service(svc_line.group(1)))
 
         return services if services else self.object_store.resolve_service("any")
 
@@ -491,6 +701,11 @@ class HuaweiParser(AbstractParser):
             return self.object_store.resolve_address("any")
 
         obj_name = f"acl_{rule_id}_{side}_{ip_str}"
+
+        # 处理 bare 0（华为 ACL 中 0 = host /32，即 wildcard 0.0.0.0）
+        if mask == "0":
+            mask = "0.0.0.0"
+
         try:
             # ACL 中使用 wildcard mask
             self.object_store.add_address_object(obj_name, "subnet", ip_str, mask)
