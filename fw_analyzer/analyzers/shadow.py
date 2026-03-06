@@ -270,8 +270,23 @@ class ShadowAnalyzer:
         """
         判断 rule_a 是否完全覆盖 rule_b。
 
-        覆盖 = 对于 B 的每一个地址/服务对象，A 中都有某个对象包含它。
+        覆盖 = zone/interface 匹配 + 对于 B 的每一个地址/服务对象，A 中都有某个对象包含它。
+
+        Zone 覆盖语义：
+          - 空字符串 = 无域限制（相当于"所有域"），可以覆盖任何域集合
+          - 非空域使用 "; " 分隔多域，A 的域集必须是 B 域集的超集
+          - 即 A.zones ⊇ B.zones 时 A 才在该维度覆盖 B
+
+        Interface 覆盖语义同理：空 = 无限制，非空需要精确匹配或 A 为空。
         """
+        # Zone / interface 检查
+        if not self._zone_a_covers_b(rule_a.src_zone, rule_b.src_zone):
+            return False
+        if not self._zone_a_covers_b(rule_a.dst_zone, rule_b.dst_zone):
+            return False
+        if not self._zone_a_covers_b(rule_a.interface, rule_b.interface):
+            return False
+
         # 源地址：B 的每个 src 对象必须被 A 的某个 src 对象包含
         if not self._addr_list_b_covered_by_a(rule_b.src_ip, rule_a.src_ip):
             return False
@@ -285,6 +300,24 @@ class ShadowAnalyzer:
             return False
 
         return True
+
+    @staticmethod
+    def _zone_a_covers_b(a_zone: str, b_zone: str) -> bool:
+        """
+        判断 zone/interface 维度 A 是否覆盖 B。
+
+        - 空字符串 = 无限制（覆盖一切）
+        - A 为空 → True（A 不限域，覆盖 B 的任何域）
+        - B 为空 → 只有 A 也为空才 True（B 不限域=所有域，A 必须也不限才能覆盖）
+        - 非空 → A 的域集必须是 B 域集的超集
+        """
+        if not a_zone:
+            return True
+        if not b_zone:
+            return False  # A 有域限制，B 无限制 → A 无法覆盖 B
+        a_set = {z.strip() for z in a_zone.split(";")}
+        b_set = {z.strip() for z in b_zone.split(";")}
+        return a_set >= b_set
 
     def _addr_list_b_covered_by_a(
         self,

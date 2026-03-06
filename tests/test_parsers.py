@@ -719,6 +719,405 @@ class TestPaloAltoSetComplex:
         result = self._parse(paloalto_set_complex_cfg)
         for rule in result.rules:
             if rule.rule_name in ("permit-deep", "permit-fqdn", "permit-admin",
-                                  "disabled-ssh", "Deny Quoted", "deny-all"):
+                                   "disabled-ssh", "Deny Quoted", "deny-all"):
                 unresolved = [w for w in rule.warnings if w.code == "UNRESOLVED_OBJECT"]
                 assert len(unresolved) == 0, f"{rule.rule_name} has unresolved: {unresolved}"
+
+
+# ==================================================================
+# Parser-level log_enabled 测试（内联配置字符串）
+# ==================================================================
+
+
+class TestHuaweiLogEnabled:
+    """华为解析器 log_enabled 字段提取测试。"""
+
+    SECURITY_POLICY_WITH_LOG = """\
+security-policy
+ rule name rule-with-log
+  source-zone trust
+  destination-zone untrust
+  source-address any
+  destination-address any
+  service any
+  action permit
+  policy logging
+ rule name rule-with-session-log
+  source-zone trust
+  destination-zone untrust
+  source-address any
+  destination-address any
+  service any
+  action permit
+  session logging
+ rule name rule-with-traffic-log
+  source-zone trust
+  destination-zone untrust
+  source-address any
+  destination-address any
+  service any
+  action permit
+  traffic logging
+ rule name rule-no-log
+  source-zone trust
+  destination-zone untrust
+  source-address any
+  destination-address any
+  service any
+  action deny
+"""
+
+    def test_policy_logging_detected(self):
+        result = get_parser("huawei").parse(self.SECURITY_POLICY_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-log"][0]
+        assert rule.log_enabled is True
+
+    def test_session_logging_detected(self):
+        result = get_parser("huawei").parse(self.SECURITY_POLICY_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-session-log"][0]
+        assert rule.log_enabled is True
+
+    def test_traffic_logging_detected(self):
+        result = get_parser("huawei").parse(self.SECURITY_POLICY_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-traffic-log"][0]
+        assert rule.log_enabled is True
+
+    def test_no_logging_detected(self):
+        result = get_parser("huawei").parse(self.SECURITY_POLICY_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-no-log"][0]
+        assert rule.log_enabled is False
+
+    ACL_WITH_LOG = """\
+acl number 3000
+ rule 0 permit ip source 10.0.0.0 0.0.0.255 logging
+ rule 1 deny ip source 10.1.0.0 0.0.255.255
+"""
+
+    def test_acl_logging_keyword_detected(self):
+        result = get_parser("huawei").parse(self.ACL_WITH_LOG)
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_0 = [r for r in acl_rules if "rule0" in r.raw_rule_id][0]
+        assert rule_0.log_enabled is True
+
+    def test_acl_no_logging_keyword(self):
+        result = get_parser("huawei").parse(self.ACL_WITH_LOG)
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_1 = [r for r in acl_rules if "rule1" in r.raw_rule_id][0]
+        assert rule_1.log_enabled is False
+
+
+class TestCiscoAsaLogEnabled:
+    """Cisco ASA 解析器 log_enabled 字段提取测试。"""
+
+    CISCO_ACL_WITH_LOG = """\
+access-list outside extended permit tcp any any eq 443 log
+access-list outside extended permit tcp any any eq 80 log warnings
+access-list outside extended deny ip any any
+"""
+
+    def test_log_keyword_detected(self):
+        result = get_parser("cisco-asa").parse(self.CISCO_ACL_WITH_LOG)
+        rule_0 = result.rules[0]
+        assert rule_0.log_enabled is True
+
+    def test_log_with_level_detected(self):
+        result = get_parser("cisco-asa").parse(self.CISCO_ACL_WITH_LOG)
+        rule_1 = result.rules[1]
+        assert rule_1.log_enabled is True
+
+    def test_no_log_keyword(self):
+        result = get_parser("cisco-asa").parse(self.CISCO_ACL_WITH_LOG)
+        rule_2 = result.rules[2]
+        assert rule_2.log_enabled is False
+
+    def test_log_does_not_affect_service_parsing(self):
+        """确保剥离 log 关键字后端口解析不受影响。"""
+        result = get_parser("cisco-asa").parse(self.CISCO_ACL_WITH_LOG)
+        from fw_analyzer.models.port_range import PortRange
+        rule_0 = result.rules[0]
+        assert any(
+            s.dst_port.contains(PortRange.single(443)) for s in rule_0.services
+        )
+        rule_1 = result.rules[1]
+        assert any(
+            s.dst_port.contains(PortRange.single(80)) for s in rule_1.services
+        )
+
+
+class TestFortinetLogEnabled:
+    """Fortinet 解析器 log_enabled 字段提取测试。"""
+
+    FORTINET_POLICY_WITH_LOG = """\
+config firewall policy
+    edit 1
+        set name "permit-web-logged"
+        set srcintf "inside"
+        set dstintf "outside"
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set action accept
+        set logtraffic all
+    next
+    edit 2
+        set name "permit-web-utm"
+        set srcintf "inside"
+        set dstintf "outside"
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set action accept
+        set logtraffic utm
+    next
+    edit 3
+        set name "deny-no-log"
+        set srcintf "inside"
+        set dstintf "outside"
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set action deny
+        set logtraffic disable
+    next
+    edit 4
+        set name "deny-default"
+        set srcintf "inside"
+        set dstintf "outside"
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "ALL"
+        set action deny
+    next
+end
+"""
+
+    def _find_rule(self, result, name_substring):
+        for r in result.rules:
+            if name_substring in r.rule_name:
+                return r
+        return None
+
+    def test_logtraffic_all(self):
+        result = get_parser("fortinet").parse(self.FORTINET_POLICY_WITH_LOG)
+        rule = self._find_rule(result, "permit-web-logged")
+        assert rule is not None
+        assert rule.log_enabled is True
+
+    def test_logtraffic_utm(self):
+        result = get_parser("fortinet").parse(self.FORTINET_POLICY_WITH_LOG)
+        rule = self._find_rule(result, "permit-web-utm")
+        assert rule is not None
+        assert rule.log_enabled is True
+
+    def test_logtraffic_disable(self):
+        result = get_parser("fortinet").parse(self.FORTINET_POLICY_WITH_LOG)
+        rule = self._find_rule(result, "deny-no-log")
+        assert rule is not None
+        assert rule.log_enabled is False
+
+    def test_logtraffic_missing(self):
+        """未设置 logtraffic 的策略应为 log_enabled=False。"""
+        result = get_parser("fortinet").parse(self.FORTINET_POLICY_WITH_LOG)
+        rule = self._find_rule(result, "deny-default")
+        assert rule is not None
+        assert rule.log_enabled is False
+
+
+class TestPaloAltoSetLogEnabled:
+    """PAN-OS set 格式解析器 log_enabled 字段提取测试。"""
+
+    PA_SET_WITH_LOG = """\
+set rulebase security rules rule-with-log-setting from any
+set rulebase security rules rule-with-log-setting to any
+set rulebase security rules rule-with-log-setting source any
+set rulebase security rules rule-with-log-setting destination any
+set rulebase security rules rule-with-log-setting service any
+set rulebase security rules rule-with-log-setting action allow
+set rulebase security rules rule-with-log-setting log-setting default
+set rulebase security rules rule-with-log-end from any
+set rulebase security rules rule-with-log-end to any
+set rulebase security rules rule-with-log-end source any
+set rulebase security rules rule-with-log-end destination any
+set rulebase security rules rule-with-log-end service any
+set rulebase security rules rule-with-log-end action allow
+set rulebase security rules rule-with-log-end log-end yes
+set rulebase security rules rule-with-log-start from any
+set rulebase security rules rule-with-log-start to any
+set rulebase security rules rule-with-log-start source any
+set rulebase security rules rule-with-log-start destination any
+set rulebase security rules rule-with-log-start service any
+set rulebase security rules rule-with-log-start action allow
+set rulebase security rules rule-with-log-start log-start yes
+set rulebase security rules rule-no-log from any
+set rulebase security rules rule-no-log to any
+set rulebase security rules rule-no-log source any
+set rulebase security rules rule-no-log destination any
+set rulebase security rules rule-no-log service any
+set rulebase security rules rule-no-log action deny
+"""
+
+    def test_log_setting_detected(self):
+        result = get_parser("paloalto-set").parse(self.PA_SET_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-log-setting"][0]
+        assert rule.log_enabled is True
+
+    def test_log_end_detected(self):
+        result = get_parser("paloalto-set").parse(self.PA_SET_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-log-end"][0]
+        assert rule.log_enabled is True
+
+    def test_log_start_detected(self):
+        result = get_parser("paloalto-set").parse(self.PA_SET_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-with-log-start"][0]
+        assert rule.log_enabled is True
+
+    def test_no_log_props(self):
+        result = get_parser("paloalto-set").parse(self.PA_SET_WITH_LOG)
+        rule = [r for r in result.rules if r.rule_name == "rule-no-log"][0]
+        assert rule.log_enabled is False
+
+
+# ------------------------------------------------------------------
+# PA set 格式 application→protocol 映射测试
+# ------------------------------------------------------------------
+
+class TestPaloAltoSetAppMapping:
+    """PAN-OS set 格式 application-default + 具体 application 映射测试。"""
+
+    PA_SET_APP_ICMP = """\
+set rulebase security rules icmp-rule from trust
+set rulebase security rules icmp-rule to untrust
+set rulebase security rules icmp-rule source any
+set rulebase security rules icmp-rule destination any
+set rulebase security rules icmp-rule application [ icmp ping traceroute ]
+set rulebase security rules icmp-rule service application-default
+set rulebase security rules icmp-rule action allow
+set rulebase security rules icmp-rule log-setting default
+"""
+
+    PA_SET_APP_NTP = """\
+set rulebase security rules ntp-rule from trust
+set rulebase security rules ntp-rule to untrust
+set rulebase security rules ntp-rule source any
+set rulebase security rules ntp-rule destination any
+set rulebase security rules ntp-rule application ntp
+set rulebase security rules ntp-rule service application-default
+set rulebase security rules ntp-rule action allow
+set rulebase security rules ntp-rule log-setting default
+"""
+
+    PA_SET_APP_ANY = """\
+set rulebase security rules any-app-rule from trust
+set rulebase security rules any-app-rule to untrust
+set rulebase security rules any-app-rule source any
+set rulebase security rules any-app-rule destination any
+set rulebase security rules any-app-rule application any
+set rulebase security rules any-app-rule service application-default
+set rulebase security rules any-app-rule action allow
+set rulebase security rules any-app-rule log-setting default
+"""
+
+    PA_SET_APP_UNKNOWN = """\
+set rulebase security rules unknown-app-rule from trust
+set rulebase security rules unknown-app-rule to untrust
+set rulebase security rules unknown-app-rule source any
+set rulebase security rules unknown-app-rule destination any
+set rulebase security rules unknown-app-rule application some-unknown-app
+set rulebase security rules unknown-app-rule service application-default
+set rulebase security rules unknown-app-rule action allow
+set rulebase security rules unknown-app-rule log-setting default
+"""
+
+    PA_SET_APP_EXPLICIT_SVC = """\
+set service my-svc protocol tcp port 8080
+set rulebase security rules explicit-svc-rule from trust
+set rulebase security rules explicit-svc-rule to untrust
+set rulebase security rules explicit-svc-rule source any
+set rulebase security rules explicit-svc-rule destination any
+set rulebase security rules explicit-svc-rule application [ icmp ping ]
+set rulebase security rules explicit-svc-rule service my-svc
+set rulebase security rules explicit-svc-rule action allow
+set rulebase security rules explicit-svc-rule log-setting default
+"""
+
+    PA_SET_APP_DNS = """\
+set rulebase security rules dns-rule from trust
+set rulebase security rules dns-rule to untrust
+set rulebase security rules dns-rule source any
+set rulebase security rules dns-rule destination any
+set rulebase security rules dns-rule application dns
+set rulebase security rules dns-rule service application-default
+set rulebase security rules dns-rule action allow
+set rulebase security rules dns-rule log-setting default
+"""
+
+    PA_SET_APP_MIXED = """\
+set rulebase security rules mixed-rule from trust
+set rulebase security rules mixed-rule to untrust
+set rulebase security rules mixed-rule source any
+set rulebase security rules mixed-rule destination any
+set rulebase security rules mixed-rule application [ icmp some-custom-app ]
+set rulebase security rules mixed-rule service application-default
+set rulebase security rules mixed-rule action allow
+set rulebase security rules mixed-rule log-setting default
+"""
+
+    def test_icmp_apps_mapped_to_icmp_protocol(self):
+        """icmp + ping + traceroute → icmp 协议。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_ICMP)
+        rule = result.rules[0]
+        assert len(rule.services) > 0
+        assert all(s.protocol == "icmp" for s in rule.services)
+
+    def test_icmp_apps_deduped(self):
+        """icmp, ping, traceroute 都映射到 icmp/0-0，去重后只有一个。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_ICMP)
+        rule = result.rules[0]
+        assert len(rule.services) == 1
+        assert rule.services[0].protocol == "icmp"
+
+    def test_ntp_mapped_to_udp_123(self):
+        """ntp → udp/123。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_NTP)
+        rule = result.rules[0]
+        assert len(rule.services) == 1
+        assert rule.services[0].protocol == "udp"
+        assert rule.services[0].dst_port.low == 123
+        assert rule.services[0].dst_port.high == 123
+
+    def test_app_any_stays_any(self):
+        """application=any + service=application-default → services 为空（any）。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_ANY)
+        rule = result.rules[0]
+        assert rule.services == []
+        assert rule.service_str() == "any"
+
+    def test_unknown_app_falls_back_to_any(self):
+        """未知 application → services 为空（any）。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_UNKNOWN)
+        rule = result.rules[0]
+        assert rule.services == []
+
+    def test_explicit_service_ignores_application(self):
+        """当 service 指定了具体服务名，application 不影响服务解析。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_EXPLICIT_SVC)
+        rule = result.rules[0]
+        assert len(rule.services) == 1
+        assert rule.services[0].protocol == "tcp"
+        assert rule.services[0].dst_port.low == 8080
+
+    def test_dns_mapped_to_udp_tcp_53(self):
+        """dns → udp/53 + tcp/53。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_DNS)
+        rule = result.rules[0]
+        assert len(rule.services) == 2
+        protocols = {s.protocol for s in rule.services}
+        assert protocols == {"udp", "tcp"}
+        for s in rule.services:
+            assert s.dst_port.low == 53
+
+    def test_mixed_known_unknown_falls_back_to_any(self):
+        """一个已知 + 一个未知 application → 回退到 any。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_APP_MIXED)
+        rule = result.rules[0]
+        assert rule.services == []

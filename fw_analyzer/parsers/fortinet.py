@@ -502,6 +502,11 @@ class FortinetParser(AbstractParser):
         # --- 注释 ---
         comment = sets.get("comments", "").strip('"')
 
+        # --- 日志 ---
+        logtraffic = sets.get("logtraffic", "").lower()
+        # FortiGate: "all"/"utm" = 有日志，"disable"/缺失 = 无日志
+        log_enabled = logtraffic in ("all", "utm")
+
         # --- 展开地址 ---
         from ..models.ip_utils import parse_ipv4_network as _parse_net
         from ..models.object_store import AddressObject as _AO
@@ -564,6 +569,7 @@ class FortinetParser(AbstractParser):
             src_zone="; ".join(src_intfs),
             dst_zone="; ".join(dst_intfs),
             enabled=enabled,
+            log_enabled=log_enabled,
             comment=comment,
             warnings=rule_warnings,
         )

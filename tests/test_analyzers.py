@@ -32,7 +32,11 @@ def _make_rule(
     dst_port_start: int = 0,
     dst_port_end: int = 65535,
     enabled: bool = True,
+    log_enabled: bool = True,
     comment: str = "",
+    src_zone: str = "",
+    dst_zone: str = "",
+    interface: str = "",
 ) -> FlatRule:
     """构造用于测试的 FlatRule。"""
     from ipaddress import IPv4Network
@@ -71,7 +75,11 @@ def _make_rule(
         dst_ip=dst_ip,
         services=services,
         action=action,  # type: ignore[arg-type]
+        src_zone=src_zone,
+        dst_zone=dst_zone,
+        interface=interface,
         enabled=enabled,
+        log_enabled=log_enabled,
         comment=comment,
     )
 
@@ -941,6 +949,120 @@ class TestShadowConflictEdgeCases:
         assert len(shadow_tags) >= 2
 
 
+class TestShadowZoneAwareness:
+    """影子规则检测的 zone/interface 感知测试。"""
+
+    def test_same_zone_still_shadowed(self):
+        """同 zone 的规则仍然被正常影子检测。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_different_src_zone_no_shadow(self):
+        """不同源 zone 的规则不构成影子。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="dmz", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_different_dst_zone_no_shadow(self):
+        """不同目的 zone 的规则不构成影子。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="trust", dst_zone="dmz"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_empty_zone_covers_any_zone(self):
+        """空 zone（无域限制）可以覆盖任何具体 zone。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="", dst_zone=""),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_specific_zone_cannot_cover_empty_zone(self):
+        """具体 zone 不能覆盖空 zone（无域限制=所有域）。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="", dst_zone=""),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_multi_zone_superset_covers(self):
+        """多域超集可以覆盖子集。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust; dmz", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_multi_zone_subset_no_cover(self):
+        """多域子集不能覆盖超集。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       src_zone="trust; dmz", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_interface_same_shadowed(self):
+        """同 interface 的规则仍被正常影子检测。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       interface="outside"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       interface="outside"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_interface_different_no_shadow(self):
+        """不同 interface 的规则不构成影子。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       interface="outside"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any",
+                       interface="inside"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_shadow_conflict_with_zone(self):
+        """同 zone 但不同 action → SHADOW_CONFLICT。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+            _make_rule(1, action="deny", src="192.168.1.0/24", dst="any",
+                       src_zone="trust", dst_zone="untrust"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW_CONFLICT" in t for t in rules[1].analysis_tags)
+
+
 class TestAnalysisEngineIntegration:
     """AnalysisEngine 使用复杂 fixture 的集成测试。"""
 
@@ -971,3 +1093,192 @@ class TestAnalysisEngineIntegration:
         # 应有 DISABLED_RULES 告警（fixture 中有 disabled 规则）
         all_codes = [w.code for w in result.analysis_warnings]
         assert any("DISABLED_RULES" in c for c in all_codes)
+
+
+# ------------------------------------------------------------------
+# ITO 工单号提取 + NO_TICKET 标签
+# ------------------------------------------------------------------
+
+class TestITOExtraction:
+    """测试 ITO 工单号提取逻辑。"""
+
+    def test_ito_dash_format(self):
+        """ITO-1234 格式从 rule_name 提取。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ITO-1234_permit_web"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-1234"
+
+    def test_ito_underscore_format(self):
+        """ITO_5678 格式从 rule_name 提取。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ITO_5678_DST"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-5678"
+
+    def test_ito_space_format(self):
+        """ITO 9012 格式（带空格）从 comment 提取。"""
+        rule = _make_rule(0, action="permit", comment="ITO 9012 approved")
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-9012"
+
+    def test_ito_no_separator(self):
+        """ITO3456 格式（无分隔符）。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ITO3456_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-3456"
+
+    def test_ito_from_comment(self):
+        """rule_name 无 ITO 时从 comment 提取。"""
+        rule = _make_rule(0, action="permit", comment="Ref: ITO-7890")
+        rule.rule_name = "web_access_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-7890"
+
+    def test_ito_rule_name_priority(self):
+        """rule_name 和 comment 都有 ITO 时，优先用 rule_name 的。"""
+        rule = _make_rule(0, action="permit", comment="ITO-9999")
+        rule.rule_name = "ITO-1111_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-1111"
+
+    def test_ito_case_insensitive(self):
+        """ITO 匹配不区分大小写。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ito-2345_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-2345"
+
+    def test_no_ito_found(self):
+        """没有 ITO 工单号 → ticket 为空。"""
+        rule = _make_rule(0, action="permit", comment="some comment")
+        rule.rule_name = "web_rule_1"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == ""
+
+    def test_ito_with_sub_ticket(self):
+        """ITO-8005-ipinip 格式只取基础号 ITO-8005。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ITO-8005-ipinip"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-8005"
+
+    def test_false_positive_itor(self):
+        """'itor' 不应被误识别为 ITO 工单号（需要数字）。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "monitor_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == ""
+
+    def test_ito_applies_to_deny_rules(self):
+        """deny 规则也应提取 ITO 工单号。"""
+        rule = _make_rule(0, action="deny", comment="")
+        rule.rule_name = "ITO-4444_deny_bad"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-4444"
+
+    def test_ito_applies_to_disabled_rules(self):
+        """disabled 规则也应提取 ITO 工单号。"""
+        rule = _make_rule(0, action="permit", comment="ITO-5555", enabled=False)
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert rule.ticket == "ITO-5555"
+
+
+class TestNoTicketTag:
+    """测试 NO_TICKET 合规标签。"""
+
+    def test_no_ticket_tagged(self):
+        """没有 ITO 的 enabled 规则触发 NO_TICKET。"""
+        rule = _make_rule(0, action="permit", comment="no ticket here")
+        rule.rule_name = "plain_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert any("NO_TICKET" in t for t in rule.analysis_tags)
+
+    def test_has_ticket_not_tagged(self):
+        """有 ITO 的规则不触发 NO_TICKET。"""
+        rule = _make_rule(0, action="permit", comment="")
+        rule.rule_name = "ITO-1234_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert not any("NO_TICKET" in t for t in rule.analysis_tags)
+
+    def test_no_ticket_is_issue_not_info(self):
+        """NO_TICKET 应被视为问题标签（非信息性）。"""
+        from fw_analyzer.analyzers.engine import _is_informational
+        assert not _is_informational("COMPLIANCE:NO_TICKET")
+
+    def test_no_ticket_on_deny_rule(self):
+        """deny 规则没有 ITO 也应触发 NO_TICKET。"""
+        rule = _make_rule(0, action="deny", comment="")
+        rule.rule_name = "deny_all"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert any("NO_TICKET" in t for t in rule.analysis_tags)
+
+    def test_disabled_rule_no_ticket_check_skipped(self):
+        """disabled 规则不检查 NO_TICKET（只检查 enabled 规则）。"""
+        rule = _make_rule(0, action="permit", comment="", enabled=False)
+        rule.rule_name = "old_rule"
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert not any("NO_TICKET" in t for t in rule.analysis_tags)
+
+
+# ------------------------------------------------------------------
+# NO_LOG 合规标签
+# ------------------------------------------------------------------
+
+class TestNoLogTag:
+    """测试 NO_LOG 合规标签。"""
+
+    def test_no_log_tagged(self):
+        """log_enabled=False 的 enabled 规则触发 NO_LOG。"""
+        rule = _make_rule(0, action="permit", log_enabled=False)
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert any("NO_LOG" in t for t in rule.analysis_tags)
+
+    def test_log_enabled_not_tagged(self):
+        """log_enabled=True 的规则不触发 NO_LOG。"""
+        rule = _make_rule(0, action="permit", log_enabled=True)
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert not any("NO_LOG" in t for t in rule.analysis_tags)
+
+    def test_no_log_is_issue_not_info(self):
+        """NO_LOG 应被视为问题标签（非信息性）。"""
+        from fw_analyzer.analyzers.engine import _is_informational
+        assert not _is_informational("COMPLIANCE:NO_LOG")
+
+    def test_no_log_on_deny_rule(self):
+        """deny 规则 log_enabled=False 也应触发 NO_LOG。"""
+        rule = _make_rule(0, action="deny", log_enabled=False)
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert any("NO_LOG" in t for t in rule.analysis_tags)
+
+    def test_disabled_rule_no_log_check_skipped(self):
+        """disabled 规则不检查 NO_LOG。"""
+        rule = _make_rule(0, action="permit", log_enabled=False, enabled=False)
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze([rule], config)
+        assert not any("NO_LOG" in t for t in rule.analysis_tags)
+
+    def test_no_log_default_is_true(self):
+        """FlatRule 默认 log_enabled=True。"""
+        rule = _make_rule(0, action="permit")
+        assert rule.log_enabled is True

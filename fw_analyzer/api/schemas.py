@@ -51,7 +51,9 @@ class RuleSchema(BaseModel):
     src_zone: str
     dst_zone: str
     enabled: bool
+    log_enabled: bool
     comment: str
+    ticket: str
     analysis_tags: List[str]
     warnings: List[WarningSchema]
 

@@ -49,7 +49,8 @@ class Warning:
                OVERWIDE:CRITICAL / OVERWIDE:HIGH / OVERWIDE:MEDIUM / OVERWIDE:LOW
       合规告警：COMPLIANCE:PERMIT_ANY_ANY / COMPLIANCE:NO_IMPLICIT_DENY /
                COMPLIANCE:CLEARTEXT / COMPLIANCE:HIGH_RISK_PORT /
-               COMPLIANCE:NO_COMMENT / COMPLIANCE:DISABLED_RULES
+               COMPLIANCE:NO_COMMENT / COMPLIANCE:DISABLED_RULES /
+               COMPLIANCE:NO_TICKET / COMPLIANCE:NO_LOG
     """
     code: str
     message: str
@@ -125,7 +126,9 @@ class FlatRule:
 
     # --- 元信息 ---
     enabled: bool = True
+    log_enabled: bool = True                        # 是否开启日志记录（默认 True）
     comment: str = ""
+    ticket: str = ""                                # ITO 工单号（从 rule_name/comment 提取）
 
     # --- 分析结果（分析器写入，初始为空）---
     analysis_tags: list[str] = field(default_factory=list)
@@ -194,7 +197,9 @@ class FlatRule:
             "interface": self.interface,
             "direction": self.direction,
             "enabled": self.enabled,
+            "log_enabled": self.log_enabled,
             "comment": self.comment,
+            "ticket": self.ticket,
             "analysis_tags": self.analysis_tags,
             "warnings": [w.to_dict() for w in self.warnings],
         }
@@ -221,7 +226,9 @@ class FlatRule:
             "interface": self.interface,
             "direction": self.direction,
             "enabled": self.enabled,
+            "log_enabled": self.log_enabled,
             "comment": self.comment,
+            "ticket": self.ticket,
             "analysis_tags": self.analysis_tags_str(),
             "warnings": self.warnings_str(),
             "vendor": self.vendor,

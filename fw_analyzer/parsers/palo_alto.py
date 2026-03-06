@@ -55,6 +55,68 @@ PANOS_BUILTIN_SERVICES: dict[str, list[tuple[str, int, int]]] = {
 }
 
 
+# PAN-OS application → 默认协议/端口映射
+# 当 service=application-default 且 application 不为 any 时使用
+# 格式: { app_name: [(protocol, dst_port_lo, dst_port_hi), ...] }
+PANOS_APP_TO_PROTOCOL: dict[str, list[tuple[str, int, int]]] = {
+    # ICMP 相关
+    "icmp":           [("icmp", 0, 0)],
+    "ping":           [("icmp", 0, 0)],
+    "traceroute":     [("icmp", 0, 0)],
+    "ping6":          [("icmp", 0, 0)],
+    "ping-tunnel":    [("icmp", 0, 0)],
+    # DNS
+    "dns":            [("udp", 53, 53), ("tcp", 53, 53)],
+    # Web
+    "web-browsing":   [("tcp", 80, 80)],
+    "ssl":            [("tcp", 443, 443)],
+    # SSH / Telnet
+    "ssh":            [("tcp", 22, 22)],
+    "telnet":         [("tcp", 23, 23)],
+    # FTP
+    "ftp":            [("tcp", 21, 21)],
+    # SMTP / Email
+    "smtp":           [("tcp", 25, 25)],
+    "pop3":           [("tcp", 110, 110)],
+    "imap":           [("tcp", 143, 143)],
+    # NTP
+    "ntp":            [("udp", 123, 123)],
+    # SNMP
+    "snmp":           [("udp", 161, 161)],
+    # LDAP
+    "ldap":           [("tcp", 389, 389)],
+    # Syslog
+    "syslog":         [("udp", 514, 514)],
+    # RDP
+    "ms-rdp":         [("tcp", 3389, 3389)],
+    # Database
+    "mysql":          [("tcp", 3306, 3306)],
+    "mssql-db":       [("tcp", 1433, 1433)],
+    "oracle-database": [("tcp", 1521, 1521)],
+    "postgresql":     [("tcp", 5432, 5432)],
+    # DHCP
+    "dhcp":           [("udp", 67, 68)],
+    # Kerberos
+    "kerberos":       [("tcp", 88, 88), ("udp", 88, 88)],
+    # SMB
+    "ms-ds-smb":      [("tcp", 445, 445)],
+    # RADIUS
+    "radius":         [("udp", 1812, 1812)],
+    # TFTP
+    "tftp":           [("udp", 69, 69)],
+    # NetBIOS
+    "netbios-dg":     [("udp", 138, 138)],
+    "netbios-ns":     [("udp", 137, 137)],
+    "netbios-ss":     [("tcp", 139, 139)],
+    # Microsoft Outlook
+    "ms-outlook-downloading":     [("tcp", 443, 443)],
+    "ms-outlook-personal-uploading": [("tcp", 443, 443)],
+    "ms-outlook-uploading":       [("tcp", 443, 443)],
+    "outlook-web":                [("tcp", 443, 443)],
+    "outlook-web-online":         [("tcp", 443, 443)],
+}
+
+
 class PaloAltoParser(AbstractParser):
     """Palo Alto PAN-OS XML 配置解析器。"""
 
@@ -296,13 +358,16 @@ class PaloAltoParser(AbstractParser):
         # --- 服务 ---
         svc_member_names = self._get_member_names(entry, "service")
 
+        # --- 应用 ---
+        app_member_names = self._get_member_names(entry, "application")
+
         # --- 展开地址 ---
         src_ip = self._resolve_address_list(src_member_names)
         dst_ip = self._resolve_address_list(dst_member_names)
 
         # --- 展开服务 ---
         # application-default / any 特殊处理
-        services = self._resolve_service_list(svc_member_names)
+        services = self._resolve_service_list(svc_member_names, app_member_names)
 
         # --- 描述/注释 ---
         comment = entry.findtext("description") or ""
@@ -366,25 +431,64 @@ class PaloAltoParser(AbstractParser):
                     result.append(obj)
         return result
 
-    def _resolve_service_list(self, names: list[str]) -> list[ServiceObject]:
+    def _resolve_service_list(
+        self, names: list[str], app_names: list[str] | None = None,
+    ) -> list[ServiceObject]:
         """
         展开服务名称列表。
 
-        特殊值：
-          "any"                 → any
-          "application-default" → any（应用层默认端口，忽略）
+        当 service 为 application-default 且 application 不为 any 时，
+        根据 PANOS_APP_TO_PROTOCOL 映射生成对应的 ServiceObject。
+        其余情况：application-default / any → 空列表（any）。
         """
         result: list[ServiceObject] = []
         seen: set[str] = set()
 
         for name in names:
-            if name.lower() in ("any", "application-default"):
-                return []  # 空 services 列表 → 显示为 "any"
+            if name.lower() == "any":
+                return []
+            if name.lower() == "application-default":
+                return self._resolve_app_default_services(app_names or [])
             for obj in self.object_store.resolve_service(name):
                 key = str(obj)
                 if key not in seen:
                     seen.add(key)
                     result.append(obj)
+        return result
+
+    @staticmethod
+    def _resolve_app_default_services(
+        app_names: list[str],
+    ) -> list[ServiceObject]:
+        """
+        当 service=application-default 时，根据 application 列表推断协议/端口。
+
+        如果所有 application 都能映射，返回合并后的 ServiceObject 列表。
+        如果 application 为 any 或有任何未知应用，返回空列表（等同于 any）。
+        """
+        if not app_names or any(a.lower() == "any" for a in app_names):
+            return []
+
+        result: list[ServiceObject] = []
+        seen: set[str] = set()
+
+        for app in app_names:
+            mapping = PANOS_APP_TO_PROTOCOL.get(app.lower())
+            if mapping is None:
+                # 未知应用，无法推断协议，回退到 any
+                return []
+            for proto, lo, hi in mapping:
+                svc = ServiceObject(
+                    name=f"app:{app}",
+                    protocol=proto,
+                    src_port=PortRange.any(),
+                    dst_port=PortRange(lo, hi),
+                )
+                key = str(svc)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(svc)
+
         return result
 
     # AbstractParser 的两阶段接口由基类 parse() 统一调度，此处无需覆盖。

@@ -29,7 +29,7 @@ from ..models.port_range import PortRange
 from ..models.object_store import AddressObject, ServiceObject
 from ..models.ip_utils import parse_ipv4_network
 
-from .palo_alto import PANOS_BUILTIN_SERVICES
+from .palo_alto import PANOS_BUILTIN_SERVICES, PANOS_APP_TO_PROTOCOL
 
 # IP 字面量正则：裸 IP 或 CIDR
 _IP_LITERAL_RE = re.compile(
@@ -318,16 +318,28 @@ class PaloAltoSetParser(AbstractParser):
         if not svc_names:
             svc_names = ["any"]
 
+        # 应用
+        app_names = props.get("application", ["any"])
+        if not app_names:
+            app_names = ["any"]
+
         # 展开地址
         src_ip = self._resolve_address_list(src_names)
         dst_ip = self._resolve_address_list(dst_names)
 
-        # 展开服务
-        services = self._resolve_service_list(svc_names)
+        # 展开服务（传入应用列表以支持 application-default 映射）
+        services = self._resolve_service_list(svc_names, app_names)
 
         # 描述
         desc_vals = props.get("description", [])
         comment = " ".join(desc_vals) if desc_vals else ""
+
+        # 日志：log-setting / log-start / log-end 任一存在即视为有日志
+        log_enabled = bool(
+            props.get("log-setting")
+            or props.get("log-start")
+            or props.get("log-end")
+        )
 
         # 收集 object_store 警告
         for sw in self.object_store.warnings:
@@ -346,6 +358,7 @@ class PaloAltoSetParser(AbstractParser):
             src_zone="; ".join(src_zone_list) if src_zone_list else "",
             dst_zone="; ".join(dst_zone_list) if dst_zone_list else "",
             enabled=enabled,
+            log_enabled=log_enabled,
             comment=comment,
             warnings=rule_warnings,
         )
@@ -414,17 +427,62 @@ class PaloAltoSetParser(AbstractParser):
                     result.append(obj)
         return result
 
-    def _resolve_service_list(self, names: list[str]) -> list[ServiceObject]:
-        """展开服务名称列表。application-default / any → 空列表（any）。"""
+    def _resolve_service_list(
+        self, names: list[str], app_names: list[str] | None = None,
+    ) -> list[ServiceObject]:
+        """
+        展开服务名称列表。
+
+        当 service 为 application-default 且 application 不为 any 时，
+        根据 PANOS_APP_TO_PROTOCOL 映射生成对应的 ServiceObject。
+        其余情况：application-default / any → 空列表（any）。
+        """
         result: list[ServiceObject] = []
         seen: set[str] = set()
 
         for name in names:
-            if name.lower() in ("any", "application-default"):
+            if name.lower() == "any":
                 return []
+            if name.lower() == "application-default":
+                return self._resolve_app_default_services(app_names or [])
             for obj in self.object_store.resolve_service(name):
                 key = str(obj)
                 if key not in seen:
                     seen.add(key)
                     result.append(obj)
+        return result
+
+    @staticmethod
+    def _resolve_app_default_services(
+        app_names: list[str],
+    ) -> list[ServiceObject]:
+        """
+        当 service=application-default 时，根据 application 列表推断协议/端口。
+
+        如果所有 application 都能映射，返回合并后的 ServiceObject 列表。
+        如果 application 为 any 或有任何未知应用，返回空列表（等同于 any）。
+        """
+        if not app_names or any(a.lower() == "any" for a in app_names):
+            return []
+
+        result: list[ServiceObject] = []
+        seen: set[str] = set()
+
+        for app in app_names:
+            mapping = PANOS_APP_TO_PROTOCOL.get(app.lower())
+            if mapping is None:
+                # 未知应用，无法推断协议，回退到 any
+                return []
+            for proto, lo, hi in mapping:
+                svc = ServiceObject(
+                    name=f"app:{app}",
+                    protocol=proto,
+                    src_port=PortRange.any(),
+                    dst_port=PortRange(lo, hi),
+                )
+                key = str(svc)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(svc)
+
         return result

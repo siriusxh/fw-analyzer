@@ -33,7 +33,9 @@ RULE_CSV_FIELDS = [
     "interface",
     "direction",
     "enabled",
+    "log_enabled",
     "comment",
+    "ticket",
     "analysis_tags",
     "warnings",
 ]

@@ -10,12 +10,20 @@ fw_analyzer/analyzers/compliance.py
   HIGH_RISK_PORT      - permit 规则允许高危端口
   NO_COMMENT          - permit 规则没有注释/描述
   DISABLED_RULES      - 存在禁用的规则（可能是遗留规则）
+  NO_TICKET           - 规则没有关联 ITO 工单号
+  NO_LOG              - 规则没有开启日志记录
 """
 from __future__ import annotations
+
+import re
 
 from ..models.rule import FlatRule, Warning, WarningSeverity
 from ..models.object_store import AddressObject, ServiceObject
 from ..config import AnalyzerConfig
+
+# ITO 工单号正则：匹配 ITO-1234、ITO 1234、ITO_1234、ITO1234 等
+# 捕获基础工单号（不含后缀如 -1、_DST、-ipinip）
+_ITO_RE = re.compile(r'ITO[-_ ]?(\d{3,})', re.IGNORECASE)
 
 
 class ComplianceAnalyzer:
@@ -43,6 +51,11 @@ class ComplianceAnalyzer:
         disabled_count = 0
 
         for rule in rules:
+            # ITO 工单号提取（适用于所有规则，包括 deny/disabled）
+            ticket = self._extract_ticket(rule)
+            if ticket:
+                rule.ticket = ticket
+
             if not rule.enabled:
                 # DISABLED_RULES — tag on the rule
                 if comp.check_disabled_rules:
@@ -51,6 +64,18 @@ class ComplianceAnalyzer:
                         rule.analysis_tags.append(tag)
                     disabled_count += 1
                 continue
+
+            # NO_TICKET（所有 enabled 规则，无论 permit/deny）
+            if not rule.ticket:
+                tag = "COMPLIANCE:NO_TICKET"
+                if tag not in rule.analysis_tags:
+                    rule.analysis_tags.append(tag)
+
+            # NO_LOG（所有 enabled 规则，无论 permit/deny）
+            if not rule.log_enabled:
+                tag = "COMPLIANCE:NO_LOG"
+                if tag not in rule.analysis_tags:
+                    rule.analysis_tags.append(tag)
 
             if rule.action != "permit":
                 continue
@@ -198,3 +223,20 @@ class ComplianceAnalyzer:
             if svc.dst_port.low != 0 or svc.dst_port.high != 65535:
                 return False
         return True
+
+    @staticmethod
+    def _extract_ticket(rule: FlatRule) -> str:
+        """
+        从 rule_name 和 comment 中提取 ITO 工单号。
+
+        返回第一个匹配的工单号（如 "ITO-1234"），未找到返回空字符串。
+        搜索顺序：rule_name → comment。
+        """
+        for text in (rule.rule_name, rule.comment):
+            if not text:
+                continue
+            m = _ITO_RE.search(text)
+            if m:
+                # 规范化为 ITO-NNNN 格式
+                return f"ITO-{m.group(1)}"
+        return ""

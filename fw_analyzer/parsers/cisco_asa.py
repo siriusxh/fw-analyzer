@@ -317,6 +317,12 @@ class CiscoAsaParser(AbstractParser):
             action = self._normalize_action(m.group(2))
             rest = m.group(3).strip()
 
+            # 检测并剥离尾部 log/log <level> 关键字
+            log_match = re.search(r"\s+log(?:\s+\S+)?\s*$", rest)
+            log_enabled = bool(log_match)
+            if log_match:
+                rest = rest[:log_match.start()]
+
             seq = acl_seqs.get(acl_name, 0)
             acl_seqs[acl_name] = seq + 1
 
@@ -350,6 +356,7 @@ class CiscoAsaParser(AbstractParser):
                 services=services,
                 action=action,
                 interface=acl_name,
+                log_enabled=log_enabled,
             )
             rules.append(rule)
 

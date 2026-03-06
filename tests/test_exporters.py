@@ -248,6 +248,166 @@ class TestMarkdownExporter:
 
 
 # ------------------------------------------------------------------
+# 标签分类统计表测试
+# ------------------------------------------------------------------
+
+class TestMarkdownTagBreakdown:
+    """测试 Markdown 报告中的标签分类统计表。"""
+
+    def _make_tagged_result(self, tags_per_rule: list[list[str]]) -> AnalysisResult:
+        """快速构造带指定标签的 AnalysisResult。"""
+        rules = []
+        for i, tags in enumerate(tags_per_rule):
+            net = IPv4Network(f"10.{i}.0.0/24")
+            rule = FlatRule(
+                vendor="test",
+                raw_rule_id=f"rule-{i}",
+                rule_name=f"test-rule-{i}",
+                seq=i,
+                src_ip=[AddressObject(name=str(net), type="subnet", value=str(net), network=net)],
+                dst_ip=[AddressObject(name="any", type="any", value="0.0.0.0/0",
+                                      network=IPv4Network("0.0.0.0/0"))],
+                services=[ServiceObject(name="tcp/443", protocol="tcp",
+                                        src_port=PortRange.any(), dst_port=PortRange(443, 443))],
+                action="permit",
+                enabled=True,
+                analysis_tags=list(tags),  # copy
+            )
+            rules.append(rule)
+        return AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="test", source_file="test.cfg",
+        )
+
+    def test_no_tags_no_section(self):
+        """无标签时不输出标签分类统计。"""
+        result = self._make_tagged_result([[], []])
+        out = MarkdownExporter().export(result)
+        assert "## 标签分类统计" not in out
+
+    def test_section_present_with_tags(self):
+        """有标签时输出标签分类统计。"""
+        result = self._make_tagged_result([["SHADOW:by=rule-0"], []])
+        out = MarkdownExporter().export(result)
+        assert "## 标签分类统计" in out
+
+    def test_shadow_count(self):
+        """SHADOW 标签归一化并正确计数。"""
+        result = self._make_tagged_result([
+            ["SHADOW:by=rule-0"],
+            ["SHADOW:by=rule-1"],
+            [],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 质量问题 | `SHADOW` | 2 | 问题 |" in out
+
+    def test_shadow_conflict_counted_separately(self):
+        """SHADOW_CONFLICT 与 SHADOW 分开统计。"""
+        result = self._make_tagged_result([
+            ["SHADOW:by=rule-0"],
+            ["SHADOW_CONFLICT:by=rule-0"],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 质量问题 | `SHADOW` | 1 | 问题 |" in out
+        assert "| 质量问题 | `SHADOW_CONFLICT` | 1 | 问题 |" in out
+
+    def test_redundant_counted(self):
+        """REDUNDANT 标签正确归一化计数。"""
+        result = self._make_tagged_result([["REDUNDANT:dup_of=rule-0"]])
+        out = MarkdownExporter().export(result)
+        assert "| 质量问题 | `REDUNDANT` | 1 | 问题 |" in out
+
+    def test_overwide_categories(self):
+        """OVERWIDE 各等级独立计数。"""
+        result = self._make_tagged_result([
+            ["OVERWIDE:CRITICAL"],
+            ["OVERWIDE:HIGH"],
+            ["OVERWIDE:HIGH"],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 过宽风险 | `OVERWIDE:CRITICAL` | 1 | 问题 |" in out
+        assert "| 过宽风险 | `OVERWIDE:HIGH` | 2 | 问题 |" in out
+
+    def test_compliance_cleartext_normalized(self):
+        """CLEARTEXT 带端口参数的标签归一化统计。"""
+        result = self._make_tagged_result([
+            ["COMPLIANCE:CLEARTEXT:port=23", "COMPLIANCE:CLEARTEXT:port=21"],
+        ])
+        out = MarkdownExporter().export(result)
+        # 同一规则有两个 CLEARTEXT 标签，但归一化后只计一次
+        assert "| 合规问题 | `COMPLIANCE:CLEARTEXT` | 1 | 问题 |" in out
+
+    def test_compliance_high_risk_port_normalized(self):
+        """HIGH_RISK_PORT 带端口参数的标签归一化统计。"""
+        result = self._make_tagged_result([
+            ["COMPLIANCE:HIGH_RISK_PORT:port=22"],
+            ["COMPLIANCE:HIGH_RISK_PORT:port=3389"],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 合规问题 | `COMPLIANCE:HIGH_RISK_PORT` | 2 | 问题 |" in out
+
+    def test_no_ticket_counted(self):
+        """NO_TICKET 标签正确计数，性质为问题。"""
+        result = self._make_tagged_result([
+            ["COMPLIANCE:NO_TICKET"],
+            ["COMPLIANCE:NO_TICKET"],
+            [],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 合规问题 | `COMPLIANCE:NO_TICKET` | 2 | 问题 |" in out
+
+    def test_no_log_counted(self):
+        """NO_LOG 标签正确计数，性质为问题。"""
+        result = self._make_tagged_result([["COMPLIANCE:NO_LOG"]])
+        out = MarkdownExporter().export(result)
+        assert "| 合规问题 | `COMPLIANCE:NO_LOG` | 1 | 问题 |" in out
+
+    def test_informational_tags_marked(self):
+        """信息性标签标注为'信息'而非'问题'。"""
+        result = self._make_tagged_result([
+            ["COMPLIANCE:NO_COMMENT"],
+            ["COMPLIANCE:DISABLED_RULES"],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "| 合规信息 | `COMPLIANCE:NO_COMMENT` | 1 | 信息 |" in out
+        assert "| 合规信息 | `COMPLIANCE:DISABLED_RULES` | 1 | 信息 |" in out
+
+    def test_section_between_overview_and_warnings(self):
+        """标签分类统计表位于概览和解析警告之间。"""
+        from fw_analyzer.models.rule import Warning, WarningSeverity
+        result = self._make_tagged_result([["SHADOW:by=rule-0"]])
+        result.parse_warnings = [Warning(
+            code="PARSE_WARN", message="test warning",
+            severity=WarningSeverity.WARN,
+        )]
+        out = MarkdownExporter().export(result)
+        pos_overview = out.index("## 概览")
+        pos_breakdown = out.index("## 标签分类统计")
+        pos_warnings = out.index("## 解析警告")
+        assert pos_overview < pos_breakdown < pos_warnings
+
+    def test_mixed_tags_multiple_categories(self):
+        """多种标签混合时各类别都正确显示。"""
+        result = self._make_tagged_result([
+            ["SHADOW:by=rule-0", "COMPLIANCE:NO_TICKET", "COMPLIANCE:NO_LOG"],
+            ["OVERWIDE:HIGH", "COMPLIANCE:NO_COMMENT"],
+            ["COMPLIANCE:DISABLED_RULES"],
+        ])
+        out = MarkdownExporter().export(result)
+        assert "质量问题" in out
+        assert "过宽风险" in out
+        assert "合规问题" in out
+        assert "合规信息" in out
+
+    def test_zero_count_tags_omitted(self):
+        """计数为 0 的标签不出现在表格中。"""
+        result = self._make_tagged_result([["SHADOW:by=rule-0"]])
+        out = MarkdownExporter().export(result)
+        assert "REDUNDANT" not in out
+        assert "OVERWIDE" not in out
+
+
+# ------------------------------------------------------------------
 # 使用真实解析结果的集成测试
 # ------------------------------------------------------------------
 

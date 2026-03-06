@@ -376,6 +376,11 @@ class HuaweiParser(AbstractParser):
                 comment = self._extract_value(rule_block, r'description\s+"?([^"\n]+)"?') or ""
                 enabled = "dis " not in rule_block.lower() and "undo rule" not in rule_block.lower()
 
+                # 日志：policy logging / session logging / traffic logging 任一存在
+                log_enabled = bool(re.search(
+                    r"(?:policy|session|traffic)\s+logging", rule_block, re.IGNORECASE,
+                ))
+
                 src_addrs = self._parse_address_field(rule_block, "source-address")
                 dst_addrs = self._parse_address_field(rule_block, "destination-address")
                 services = self._parse_service_field(rule_block)
@@ -391,6 +396,7 @@ class HuaweiParser(AbstractParser):
                     src_zone=src_zone or "",
                     dst_zone=dst_zone or "",
                     enabled=enabled,
+                    log_enabled=log_enabled,
                     comment=comment,
                 )
                 rules.append(rule)
@@ -434,6 +440,11 @@ class HuaweiParser(AbstractParser):
                 comment = self._extract_value(rule_block, r'description\s+"?([^"\n]+)"?') or ""
                 enabled = "dis " not in rule_block.lower()
 
+                # 日志：policy logging / session logging / traffic logging 任一存在
+                log_enabled = bool(re.search(
+                    r"(?:policy|session|traffic)\s+logging", rule_block, re.IGNORECASE,
+                ))
+
                 src_addrs = self._parse_address_field(rule_block, "source-address")
                 dst_addrs = self._parse_address_field(rule_block, "destination-address")
                 services = self._parse_service_field(rule_block)
@@ -450,6 +461,7 @@ class HuaweiParser(AbstractParser):
                     dst_zone=dst_zone,
                     direction=direction,  # type: ignore[arg-type]
                     enabled=enabled,
+                    log_enabled=log_enabled,
                     comment=comment,
                 )
                 rules.append(rule)
@@ -495,7 +507,7 @@ class HuaweiParser(AbstractParser):
                 action = self._normalize_action(rm.group(2))
                 rest = rm.group(3)  # 剩余内容
 
-                proto, src_addrs, dst_addrs, dst_port = self._parse_acl_rule_body(
+                proto, src_addrs, dst_addrs, dst_port, log_enabled = self._parse_acl_rule_body(
                     rest, rule_id
                 )
 
@@ -514,6 +526,7 @@ class HuaweiParser(AbstractParser):
                     dst_ip=dst_addrs,
                     services=[svc],
                     action=action,
+                    log_enabled=log_enabled,
                 )
                 rules.append(rule)
                 seq += 1
@@ -522,12 +535,14 @@ class HuaweiParser(AbstractParser):
 
     def _parse_acl_rule_body(
         self, body: str, rule_id: str
-    ) -> tuple[str, list[AddressObject], list[AddressObject], PortRange]:
+    ) -> tuple[str, list[AddressObject], list[AddressObject], PortRange, bool]:
         """
         解析 ACL 规则行的 action 之后的部分。
 
-        返回 (protocol, src_addrs, dst_addrs, dst_port)。
+        返回 (protocol, src_addrs, dst_addrs, dst_port, log_enabled)。
         """
+        # 检测尾部 logging 关键字
+        log_enabled = bool(re.search(r"\s+logging\s*$", body))
         # 剥离尾部 logging 关键字
         body = re.sub(r"\s+logging\s*$", "", body)
 
@@ -577,7 +592,7 @@ class HuaweiParser(AbstractParser):
         elif dp_range_m:
             dst_port = PortRange(int(dp_range_m.group(1)), int(dp_range_m.group(2)))
 
-        return proto, src_addrs, dst_addrs, dst_port
+        return proto, src_addrs, dst_addrs, dst_port, log_enabled
 
     @staticmethod
     def _resolve_port_name(port_str: str) -> int:
