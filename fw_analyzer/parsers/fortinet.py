@@ -447,6 +447,8 @@ class FortinetParser(AbstractParser):
             if entry["type"] != "edit":
                 continue
             raw_config = raw_edit_blocks.get(entry["name"], "")
+            if raw_config:
+                raw_config = "config firewall policy\n" + raw_config
             rule = self._parse_policy_entry(entry, len(rules), raw_config=raw_config)
             if rule:
                 rules.append(rule)

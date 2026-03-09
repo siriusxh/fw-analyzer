@@ -22,7 +22,7 @@ class RawTextExtractor:
         """根据厂商调度对应的提取方法。
 
         Args:
-            vendor: 厂商标识（"cisco-asa" / "huawei" / "paloalto" / "fortinet"）
+            vendor: 厂商标识（"cisco-asa" / "huawei" / "paloalto" / "paloalto-set" / "fortinet"）
             config_text: 完整的原始配置文本
             object_names: 需要提取定义的对象名列表
 
@@ -35,7 +35,8 @@ class RawTextExtractor:
         dispatch = {
             "cisco-asa": self._extract_cisco,
             "huawei": self._extract_huawei,
-            "paloalto": self._extract_paloalto,
+            "paloalto": self._extract_paloalto_xml,
+            "paloalto-set": self._extract_paloalto_set,
             "fortinet": self._extract_fortinet,
         }
         func = dispatch.get(vendor)
@@ -106,7 +107,7 @@ class RawTextExtractor:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_paloalto(text: str, names: list[str]) -> dict[str, str]:
+    def _extract_paloalto_set(text: str, names: list[str]) -> dict[str, str]:
         """提取 PAN-OS set 格式的对象定义行。
 
         格式示例：
@@ -126,6 +127,30 @@ class RawTextExtractor:
             matched_lines = [ln for ln in lines if pattern.match(ln.strip())]
             if matched_lines:
                 result[name] = "\n".join(matched_lines)
+        return result
+
+    # ------------------------------------------------------------------
+    # Palo Alto PAN-OS (XML format)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_paloalto_xml(text: str, names: list[str]) -> dict[str, str]:
+        """提取 PAN-OS XML 格式的对象定义块。
+
+        在 <address>, <address-group>, <service>, <service-group> 节中
+        搜索 <entry name="NAME">...</entry> 块。
+        """
+        result: dict[str, str] = {}
+        for name in names:
+            escaped = re.escape(name)
+            # 匹配 <entry name="NAME">...</entry> 块
+            pattern = re.compile(
+                rf'<entry\s+name="{escaped}"[^>]*>.*?</entry>',
+                re.DOTALL,
+            )
+            m = pattern.search(text)
+            if m:
+                result[name] = m.group(0)
         return result
 
     # ------------------------------------------------------------------

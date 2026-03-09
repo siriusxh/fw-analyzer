@@ -363,10 +363,10 @@ class PaloAltoSetParser(AbstractParser):
         raw_config = "\n".join(raw_lines) if raw_lines else ""
         ref_objects: list[str] = []
         for n in props.get("source", []):
-            if n.lower() != "any" and n not in ref_objects:
+            if n.lower() != "any" and not _IP_LITERAL_RE.match(n) and n not in ref_objects:
                 ref_objects.append(n)
         for n in props.get("destination", []):
-            if n.lower() != "any" and n not in ref_objects:
+            if n.lower() != "any" and not _IP_LITERAL_RE.match(n) and n not in ref_objects:
                 ref_objects.append(n)
         for n in props.get("service", []):
             if n.lower() not in ("any", "application-default") and n not in ref_objects:

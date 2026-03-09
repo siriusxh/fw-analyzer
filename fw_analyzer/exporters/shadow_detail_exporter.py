@@ -126,11 +126,11 @@ class ShadowDetailExporter:
 
         结构：
           # Shadow Detail Report
-          ## <shadower_id> (seq=N)
+          ## 1. [Shadower] <shadower_id> (seq=N)
             摘要表格
             原始配置
             引用对象
-          #### → <victim_id> (seq=N)  [SHADOW / SHADOW_CONFLICT]
+          ### 1.1 [Victim] <victim_id> (seq=N) — SHADOW
             摘要表格
             原始配置
             引用对象
@@ -155,13 +155,13 @@ class ShadowDetailExporter:
                 group_order.append(key)
             grouped[key].append((shadower, stype, victim))
 
-        for shadower_id in group_order:
+        for group_idx, shadower_id in enumerate(group_order, 1):
             group = grouped[shadower_id]
             shadower = group[0][0]
 
             lines.append("---")
             lines.append("")
-            lines.append(f"## {shadower.raw_rule_id} (seq={shadower.seq})")
+            lines.append(f"## {group_idx}. [Shadower] {shadower.raw_rule_id} (seq={shadower.seq})")
             lines.append("")
 
             # 摘要表格
@@ -188,8 +188,11 @@ class ShadowDetailExporter:
                 lines.append("")
 
             # 各 victim
-            for _, stype, victim in group:
-                lines.append(f"#### → {victim.raw_rule_id} (seq={victim.seq})  [{stype}]")
+            for victim_idx, (_, stype, victim) in enumerate(group, 1):
+                lines.append(
+                    f"### {group_idx}.{victim_idx} [Victim] "
+                    f"{victim.raw_rule_id} (seq={victim.seq}) — {stype}"
+                )
                 lines.append("")
 
                 lines.extend(self._md_rule_table(victim))
@@ -313,4 +316,4 @@ def _pipe_lines(text: str) -> str:
     """将多行文本转为 pipe 分隔的单行（用于 CSV 字段）。"""
     if not text:
         return ""
-    return " | ".join(line for line in text.splitlines() if line.strip())
+    return " | ".join(line.strip() for line in text.splitlines() if line.strip())

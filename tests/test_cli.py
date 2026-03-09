@@ -519,3 +519,215 @@ class TestCliEdgeCases:
         ])
         assert result.exit_code == 0
         assert "批量查询" in result.output
+
+
+# ======================================================================
+# TestCliBatch
+# ======================================================================
+
+
+class TestCliBatch:
+    """batch 子命令测试。"""
+
+    @pytest.fixture
+    def batch_dir(self, tmp_path):
+        """创建包含多厂商配置文件的临时目录。"""
+        d = tmp_path / "configs"
+        d.mkdir()
+        # 复制简单 fixture 文件到临时目录
+        import shutil
+        for name in ("huawei_simple.cfg", "cisco_asa_simple.cfg", "fortinet_simple.cfg"):
+            src = FIXTURES_DIR / name
+            if src.exists():
+                shutil.copy(src, d / name)
+        return d
+
+    @pytest.fixture
+    def out_dir(self, tmp_path):
+        return tmp_path / "reports"
+
+    def test_batch_basic(self, runner, batch_dir, out_dir):
+        """基本批量处理：多厂商配置文件全部分析，生成所有报告。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir),
+        ])
+        assert result.exit_code == 0
+        assert "批量分析完成" in result.output
+        assert "处理 3 个文件" in result.output
+        # 每个文件应生成 4 个报告
+        report_files = list(out_dir.iterdir())
+        assert len(report_files) == 12  # 3 files × 4 reports
+
+    def test_batch_output_naming(self, runner, batch_dir, out_dir):
+        """验证输出文件命名：{stem}_analysis.csv 等。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir),
+        ])
+        assert result.exit_code == 0
+        # 检查华为文件的输出命名
+        assert (out_dir / "huawei_simple_analysis.csv").exists()
+        assert (out_dir / "huawei_simple_analysis.md").exists()
+        assert (out_dir / "huawei_simple_shadow_detail.csv").exists()
+        assert (out_dir / "huawei_simple_shadow_detail.md").exists()
+        # 检查 Cisco 文件的输出命名
+        assert (out_dir / "cisco_asa_simple_analysis.csv").exists()
+        assert (out_dir / "cisco_asa_simple_analysis.md").exists()
+
+    def test_batch_skip_unrecognized(self, runner, batch_dir, out_dir):
+        """混入不可识别的文件，应跳过并打印警告。"""
+        # 添加一个无法识别的文本文件
+        (batch_dir / "readme.txt").write_text("This is not a firewall config.", encoding="utf-8")
+        # 添加一个空文件
+        (batch_dir / "empty.log").write_text("", encoding="utf-8")
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir),
+        ])
+        assert result.exit_code == 0
+        assert "跳过" in result.output
+        assert "处理 3 个文件" in result.output
+        assert "跳过 2 个" in result.output
+
+    def test_batch_empty_dir(self, runner, tmp_path):
+        """空目录不报错。"""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        out = tmp_path / "out"
+        result = runner.invoke(cli, [
+            "batch", str(empty), "-O", str(out),
+        ])
+        assert result.exit_code == 0
+        assert "目录为空" in result.output
+
+    def test_batch_no_recognized_files(self, runner, tmp_path):
+        """目录中只有不可识别文件。"""
+        d = tmp_path / "junk"
+        d.mkdir()
+        (d / "notes.txt").write_text("hello world", encoding="utf-8")
+        (d / "data.bin").write_bytes(b"\x00\x01\x02\x03")
+        out = tmp_path / "out"
+        result = runner.invoke(cli, [
+            "batch", str(d), "-O", str(out),
+        ])
+        assert result.exit_code == 0
+        assert "处理 0 个文件" in result.output
+        assert "跳过 2 个" in result.output
+
+    def test_batch_reports_summary(self, runner, batch_dir, out_dir):
+        """--reports summary 只生成主报告 CSV + MD。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir), "--reports", "summary",
+        ])
+        assert result.exit_code == 0
+        # 每个文件 2 个报告文件
+        report_files = list(out_dir.iterdir())
+        assert len(report_files) == 6  # 3 files × 2 reports
+        # 应有 analysis 文件，不应有 shadow_detail
+        assert (out_dir / "huawei_simple_analysis.csv").exists()
+        assert (out_dir / "huawei_simple_analysis.md").exists()
+        assert not (out_dir / "huawei_simple_shadow_detail.csv").exists()
+
+    def test_batch_reports_csv_only(self, runner, batch_dir, out_dir):
+        """--reports csv 只生成 CSV。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir), "--reports", "csv",
+        ])
+        assert result.exit_code == 0
+        report_files = list(out_dir.iterdir())
+        assert len(report_files) == 3  # 3 files × 1 csv
+        for f in report_files:
+            assert f.name.endswith("_analysis.csv")
+
+    def test_batch_reports_markdown_only(self, runner, batch_dir, out_dir):
+        """--reports markdown 只生成 Markdown。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir), "--reports", "markdown",
+        ])
+        assert result.exit_code == 0
+        report_files = list(out_dir.iterdir())
+        assert len(report_files) == 3  # 3 files × 1 md
+        for f in report_files:
+            assert f.name.endswith("_analysis.md")
+
+    def test_batch_reports_shadow_detail(self, runner, batch_dir, out_dir):
+        """--reports shadow-detail 只生成影子详细报告。"""
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out_dir), "--reports", "shadow-detail",
+        ])
+        assert result.exit_code == 0
+        report_files = list(out_dir.iterdir())
+        assert len(report_files) == 6  # 3 files × 2 shadow reports
+        for f in report_files:
+            assert "shadow_detail" in f.name
+
+    def test_batch_recursive(self, runner, tmp_path):
+        """--recursive 递归扫描子目录。"""
+        import shutil
+        root = tmp_path / "configs"
+        root.mkdir()
+        sub = root / "subdir"
+        sub.mkdir()
+        # 根目录放一个文件
+        shutil.copy(FIXTURES_DIR / "huawei_simple.cfg", root / "huawei_simple.cfg")
+        # 子目录放一个文件
+        shutil.copy(FIXTURES_DIR / "fortinet_simple.cfg", sub / "fortinet_simple.cfg")
+        out = tmp_path / "out"
+        result = runner.invoke(cli, [
+            "batch", str(root), "-O", str(out), "--recursive", "--reports", "csv",
+        ])
+        assert result.exit_code == 0
+        assert "处理 2 个文件" in result.output
+        # 两个文件都生成了报告
+        report_files = list(out.iterdir())
+        assert len(report_files) == 2
+
+    def test_batch_vendor_override(self, runner, tmp_path):
+        """--vendor 指定厂商覆盖自动检测。"""
+        import shutil
+        d = tmp_path / "configs"
+        d.mkdir()
+        shutil.copy(FIXTURES_DIR / "huawei_simple.cfg", d / "huawei_simple.cfg")
+        out = tmp_path / "out"
+        result = runner.invoke(cli, [
+            "batch", str(d), "-O", str(out),
+            "--vendor", "huawei", "--reports", "csv",
+        ])
+        assert result.exit_code == 0
+        assert "处理 1 个文件" in result.output
+        assert (out / "huawei_simple_analysis.csv").exists()
+
+    def test_batch_output_dir_created(self, runner, batch_dir, tmp_path):
+        """输出目录不存在时自动创建。"""
+        out = tmp_path / "nested" / "deep" / "reports"
+        assert not out.exists()
+        result = runner.invoke(cli, [
+            "batch", str(batch_dir), "-O", str(out), "--reports", "csv",
+        ])
+        assert result.exit_code == 0
+        assert out.exists()
+        assert len(list(out.iterdir())) == 3
+
+    def test_batch_parse_error_continues(self, runner, tmp_path):
+        """某文件解析失败不影响其他文件的处理。"""
+        import shutil
+        d = tmp_path / "configs"
+        d.mkdir()
+        # 一个正常文件
+        shutil.copy(FIXTURES_DIR / "huawei_simple.cfg", d / "good.cfg")
+        # 一个会被识别为某厂商但解析会出问题的文件（强制指定错误厂商）
+        # 制造一个看起来像 Cisco ASA 但内容损坏的文件
+        bad = d / "bad_cisco.cfg"
+        bad.write_text(
+            "ASA Version 9.8\n"
+            "nameif outside\n"
+            "access-list BROKEN extended permit\n",  # incomplete ACL
+            encoding="utf-8",
+        )
+        out = tmp_path / "out"
+        result = runner.invoke(cli, [
+            "batch", str(d), "-O", str(out), "--reports", "csv",
+        ])
+        assert result.exit_code == 0
+        # good.cfg 应该正常处理
+        assert "处理" in result.output
+        # 报告目录应有至少一个文件
+        assert len(list(out.iterdir())) >= 1

@@ -666,7 +666,7 @@ ip service-set web-services type object
         assert "tcp" in result["web-services"]
 
 
-class TestRawTextExtractorPaloAlto:
+class TestRawTextExtractorPaloAltoSet:
     """RawTextExtractor — PAN-OS set 格式对象定义提取。"""
 
     PA_CONFIG = """\
@@ -678,20 +678,72 @@ set service svc-https protocol tcp port 443
 
     def test_extract_address(self):
         ext = RawTextExtractor()
-        result = ext.extract("paloalto", self.PA_CONFIG, ["web-server"])
+        result = ext.extract("paloalto-set", self.PA_CONFIG, ["web-server"])
         assert "web-server" in result
         assert "10.0.0.10" in result["web-server"]
 
     def test_extract_address_group(self):
         ext = RawTextExtractor()
-        result = ext.extract("paloalto", self.PA_CONFIG, ["internal-grp"])
+        result = ext.extract("paloalto-set", self.PA_CONFIG, ["internal-grp"])
         assert "internal-grp" in result
 
     def test_extract_service(self):
         ext = RawTextExtractor()
-        result = ext.extract("paloalto", self.PA_CONFIG, ["svc-https"])
+        result = ext.extract("paloalto-set", self.PA_CONFIG, ["svc-https"])
         assert "svc-https" in result
         assert "443" in result["svc-https"]
+
+
+class TestRawTextExtractorPaloAltoXml:
+    """RawTextExtractor — PAN-OS XML 格式对象定义提取。"""
+
+    PA_XML_CONFIG = """\
+<address>
+  <entry name="web-server">
+    <ip-netmask>10.0.0.10/32</ip-netmask>
+  </entry>
+  <entry name="internal-net">
+    <ip-netmask>192.168.1.0/24</ip-netmask>
+  </entry>
+</address>
+<address-group>
+  <entry name="internal-grp">
+    <static>
+      <member>internal-net</member>
+    </static>
+  </entry>
+</address-group>
+<service>
+  <entry name="svc-https">
+    <protocol>
+      <tcp><port>443</port></tcp>
+    </protocol>
+  </entry>
+</service>
+"""
+
+    def test_extract_address(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_XML_CONFIG, ["web-server"])
+        assert "web-server" in result
+        assert "10.0.0.10" in result["web-server"]
+
+    def test_extract_address_group(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_XML_CONFIG, ["internal-grp"])
+        assert "internal-grp" in result
+        assert "internal-net" in result["internal-grp"]
+
+    def test_extract_service(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_XML_CONFIG, ["svc-https"])
+        assert "svc-https" in result
+        assert "443" in result["svc-https"]
+
+    def test_not_found_returns_empty(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_XML_CONFIG, ["nonexistent"])
+        assert result == {}
 
 
 class TestRawTextExtractorFortinet:
@@ -918,19 +970,19 @@ class TestShadowDetailExporterMarkdown:
     def test_has_shadower_heading(self):
         result = self._make_shadow_result()
         out = ShadowDetailExporter().export_markdown(result)
-        assert "## rule-0" in out
+        assert "## 1. [Shadower] rule-0" in out
 
     def test_has_victim_heading(self):
         result = self._make_shadow_result()
         out = ShadowDetailExporter().export_markdown(result)
-        assert "#### → rule-1" in out
-        assert "#### → rule-2" in out
+        assert "### 1.1 [Victim] rule-1" in out
+        assert "### 1.2 [Victim] rule-2" in out
 
     def test_has_shadow_type(self):
         result = self._make_shadow_result()
         out = ShadowDetailExporter().export_markdown(result)
-        assert "[SHADOW]" in out
-        assert "[SHADOW_CONFLICT]" in out
+        assert "— SHADOW" in out
+        assert "— SHADOW_CONFLICT" in out
 
     def test_has_original_config(self):
         result = self._make_shadow_result()

@@ -386,7 +386,7 @@ class HuaweiParser(AbstractParser):
                 services = self._parse_service_field(rule_block)
 
                 # --- raw_config & referenced_objects ---
-                raw_config = rm.group(0)
+                raw_config = "security-policy\n" + rm.group(0).strip()
                 ref_objects = self._extract_huawei_ref_objects(rule_block)
 
                 rule = self._make_rule(
@@ -456,7 +456,8 @@ class HuaweiParser(AbstractParser):
                 services = self._parse_service_field(rule_block)
 
                 # --- raw_config & referenced_objects ---
-                raw_config = rm.group(0)
+                iz_header = f"firewall policy interzone {zone1} {zone2} {direction}"
+                raw_config = iz_header + "\n" + rm.group(0).strip()
                 ref_objects = self._extract_huawei_ref_objects(rule_block)
 
                 rule = self._make_rule(
@@ -531,7 +532,7 @@ class HuaweiParser(AbstractParser):
                 )
 
                 # --- raw_config & referenced_objects (ACL) ---
-                raw_config = rm.group(0).strip()
+                raw_config = f"acl number {acl_id}\n" + rm.group(0).strip()
                 ref_objects: list[str] = []
                 for addr_set_m in re.finditer(r'address-set\s+(\S+)', rest):
                     obj_name = addr_set_m.group(1)

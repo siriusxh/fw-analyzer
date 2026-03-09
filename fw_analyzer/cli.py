@@ -6,6 +6,7 @@ CLI 入口（click）。
 子命令：
   fw-analyzer parse    <file> [选项]   — 解析配置，输出规则表格
   fw-analyzer analyze  <file> [选项]   — 解析 + 全量分析，输出报告
+  fw-analyzer batch    <dir>  [选项]   — 批量分析目录中所有可识别的配置文件
   fw-analyzer trace    <file> [选项]   — 访问需求命中分析
   fw-analyzer serve    [选项]          — 启动 REST API 服务器（需安装 [api] 额外依赖）
 
@@ -104,6 +105,36 @@ def _detect_and_get_parser(content: str, vendor: str):
             )
         click.echo(f"[自动识别] 厂商: {vendor}", err=True)
     return get_parser(vendor)
+
+
+def _analyze_single_file(
+    file_path: str,
+    content: str,
+    vendor: str,
+    cfg,
+) -> tuple:
+    """解析并分析单个配置文件，返回 (result, detected_vendor, content) 或抛出异常。
+
+    Returns:
+        (AnalysisResult, str, str) — 分析结果、检测到的厂商名、原始内容
+    """
+    if vendor == "auto":
+        detected = detect_vendor(content)
+        if not detected or detected == "unknown":
+            raise click.ClickException(
+                f"无法识别文件厂商: {file_path}"
+            )
+        actual_vendor = detected
+    else:
+        actual_vendor = vendor
+
+    parser = get_parser(actual_vendor)
+    parse_result = parser.parse(content, source_file=file_path)
+
+    engine = AnalysisEngine(cfg)
+    result = engine.analyze(parse_result)
+
+    return result, actual_vendor, content
 
 
 # ------------------------------------------------------------------
@@ -247,6 +278,7 @@ def cli():
     \b
       fw-analyzer parse   firewall.cfg
       fw-analyzer analyze firewall.cfg --format markdown -o report.md
+      fw-analyzer batch   /path/to/configs/ -O /path/to/reports/
       fw-analyzer trace   firewall.cfg --src 10.0.0.1 --dst 8.8.8.8 --proto tcp --dport 443
       fw-analyzer serve   --port 8000
     """
@@ -380,6 +412,191 @@ def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, 
             f"\nShadow 详细报告已生成：\n  CSV: {csv_path}\n  Markdown: {md_path}",
             err=True,
         )
+
+
+# ------------------------------------------------------------------
+# batch 子命令
+# ------------------------------------------------------------------
+
+# batch 子命令专用的报告类型选项值
+_REPORT_CHOICES = ["all", "summary", "csv", "markdown", "shadow-detail"]
+
+
+@cli.command("batch")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False, readable=True))
+@click.option(
+    "--output-dir", "-O",
+    required=True,
+    metavar="DIR",
+    help="报告输出目录（不存在时自动创建）。",
+)
+@click.option(
+    "--vendor", "-V",
+    default="auto",
+    show_default=True,
+    type=click.Choice(
+        ["auto", "huawei", "cisco-asa", "paloalto", "paloalto-set", "fortinet"],
+        case_sensitive=False,
+    ),
+    help="厂商类型（auto 表示对每个文件自动识别）。",
+)
+@click.option(
+    "--config", "-c",
+    default=None,
+    metavar="FILE",
+    help="自定义配置文件路径（TOML）。",
+)
+@click.option(
+    "--reports", "-r",
+    default="all",
+    show_default=True,
+    type=click.Choice(_REPORT_CHOICES, case_sensitive=False),
+    help="生成的报告类型：all=全部, summary=主报告CSV+MD, csv=仅CSV, markdown=仅MD, shadow-detail=仅影子详细报告。",
+)
+@click.option(
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="递归扫描子目录。",
+)
+def cmd_batch(
+    directory: str,
+    output_dir: str,
+    vendor: str,
+    config: str | None,
+    reports: str,
+    recursive: bool,
+):
+    """批量分析目录中所有可识别的防火墙配置文件。
+
+    DIRECTORY 为包含配置文件的目录路径。
+
+    自动识别目录中每个文件的厂商类型，对可识别的文件执行完整分析并输出报告。
+    不可识别的文件会打印警告并跳过。
+
+    输出文件以原配置文件名（去掉扩展名）为前缀，添加报告类型后缀：
+
+    \b
+      {stem}_analysis.csv           — 主分析报告 CSV
+      {stem}_analysis.md            — 主分析报告 Markdown
+      {stem}_shadow_detail.csv      — 影子规则详细报告 CSV
+      {stem}_shadow_detail.md       — 影子规则详细报告 Markdown
+
+    示例：
+
+    \b
+      fw-analyzer batch /path/to/configs/ -O /path/to/reports/
+      fw-analyzer batch /path/to/configs/ -O ./reports --reports summary
+      fw-analyzer batch /path/to/configs/ -O ./reports --recursive
+    """
+    # 确保输出目录存在
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 收集文件列表
+    src_dir = Path(directory)
+    if recursive:
+        files = sorted(p for p in src_dir.rglob("*") if p.is_file())
+    else:
+        files = sorted(p for p in src_dir.iterdir() if p.is_file())
+
+    if not files:
+        click.echo(f"目录为空: {directory}", err=True)
+        return
+
+    # 加载分析配置
+    cfg = load_config(config)
+
+    # 确定要生成的报告类型
+    reports_lower = reports.lower()
+    gen_csv = reports_lower in ("all", "summary", "csv")
+    gen_md = reports_lower in ("all", "summary", "markdown")
+    gen_shadow_csv = reports_lower in ("all", "shadow-detail")
+    gen_shadow_md = reports_lower in ("all", "shadow-detail")
+
+    click.echo(f"\n扫描目录: {directory}", err=True)
+    click.echo(f"发现 {len(files)} 个文件，开始逐个分析…\n", err=True)
+
+    processed = 0
+    skipped = 0
+    failed = 0
+
+    for file_path in files:
+        file_str = str(file_path)
+        stem = file_path.stem
+        rel = file_path.relative_to(src_dir) if recursive else file_path.name
+
+        # 读取文件
+        try:
+            content = _read_file(file_str)
+        except Exception as e:
+            click.echo(f"  [跳过] {rel} — 读取失败: {e}", err=True)
+            skipped += 1
+            continue
+
+        # 识别厂商
+        if vendor == "auto":
+            detected = detect_vendor(content)
+            if not detected or detected == "unknown":
+                click.echo(f"  [跳过] {rel} — 无法识别厂商", err=True)
+                skipped += 1
+                continue
+            actual_vendor = detected
+        else:
+            actual_vendor = vendor
+
+        # 解析 + 分析
+        try:
+            result, actual_vendor, content = _analyze_single_file(
+                file_str, content, actual_vendor, cfg,
+            )
+        except Exception as e:
+            click.echo(f"  [失败] {rel} ({actual_vendor}) — {e}", err=True)
+            failed += 1
+            continue
+
+        # 生成报告
+        file_count = 0
+
+        if gen_csv:
+            csv_out = CsvExporter().export(result)
+            p = out_dir / f"{stem}_analysis.csv"
+            p.write_text(csv_out, encoding="utf-8")
+            file_count += 1
+
+        if gen_md:
+            md_out = MarkdownExporter().export(result)
+            p = out_dir / f"{stem}_analysis.md"
+            p.write_text(md_out, encoding="utf-8")
+            file_count += 1
+
+        if gen_shadow_csv or gen_shadow_md:
+            sd_exporter = ShadowDetailExporter(config_text=content)
+            if gen_shadow_csv:
+                sd_csv = sd_exporter.export_csv(result)
+                p = out_dir / f"{stem}_shadow_detail.csv"
+                p.write_text(sd_csv, encoding="utf-8")
+                file_count += 1
+            if gen_shadow_md:
+                sd_md = sd_exporter.export_markdown(result)
+                p = out_dir / f"{stem}_shadow_detail.md"
+                p.write_text(sd_md, encoding="utf-8")
+                file_count += 1
+
+        click.echo(
+            f"  [完成] {rel} ({actual_vendor}) — "
+            f"规则 {result.rule_count}, 问题 {result.issue_rule_count}, "
+            f"生成 {file_count} 个报告",
+            err=True,
+        )
+        processed += 1
+
+    # 汇总
+    click.echo(
+        f"\n批量分析完成：处理 {processed} 个文件，跳过 {skipped} 个，失败 {failed} 个。"
+        f"\n报告输出目录: {out_dir.resolve()}",
+        err=True,
+    )
 
 
 # ------------------------------------------------------------------

@@ -51,17 +51,36 @@
 
 ### 核心模块
 - `fw_analyzer/models/` — ip_utils, port_range, object_store, rule
-- `fw_analyzer/parsers/` — base, detector, huawei, cisco_asa, palo_alto, fortinet
+- `fw_analyzer/parsers/` — base, detector, huawei, cisco_asa, palo_alto, palo_alto_set, fortinet
 - `fw_analyzer/analyzers/` — engine, shadow, redundancy, overwidth, compliance
-- `fw_analyzer/exporters/` — csv_exporter, json_exporter, markdown_exporter
+- `fw_analyzer/exporters/` — csv_exporter, json_exporter, markdown_exporter, shadow_detail_exporter, raw_text_extractor
 - `fw_analyzer/trace.py` — TraceEngine, TraceQuery, load_trace_queries_from_csv
 - `fw_analyzer/config.py` — AnalyzerConfig, load_config (TOML)
-- `fw_analyzer/cli.py` — click 子命令：parse / analyze / trace / serve
+- `fw_analyzer/cli.py` — click 子命令：parse / analyze / batch / trace / serve
 - `fw_analyzer/api/` — FastAPI 骨架（可选依赖）
 
+### 已完成的增强功能
+
+- **Phase 1**: URL_CATEGORY 支持、shadow 列分离
+- **Phase 2**: 四厂商真实配置报告生成
+- **Phase 3**: Cisco ASA/Huawei 未知协议回退、ITO 提取、SHADOW_OTHERS 互标
+- **Phase 4**: Shadow Detail Report — 含原始配置命令和对象定义的详细影子分析报告（CSV + Markdown）
+  - FlatRule 新增 `raw_config` 和 `referenced_objects` 字段
+  - 所有 5 个解析器填充 raw_config/referenced_objects
+  - RawTextExtractor 按厂商提取对象定义原文
+  - ShadowDetailExporter 导出 12 列 CSV 和层级 Markdown
+  - CLI `--shadow-detail PREFIX` 选项
+- **Phase 5**: batch 子命令 — 批量分析目录中所有可识别的配置文件
+  - `fw-analyzer batch <DIR> -O <OUTPUT_DIR>` 自动遍历目录
+  - 自动识别厂商，不可识别的文件跳过并警告
+  - `--reports` 选项控制生成报告类型（all/summary/csv/markdown/shadow-detail）
+  - `--recursive` 递归扫描子目录
+  - 输出文件名：`{原文件stem}_{报告类型}.{csv/md}`
+
 ### 测试
-- `tests/fixtures/` — 四厂商示例配置
-- `tests/test_parsers.py`, `test_analyzers.py`, `test_trace.py`, `test_exporters.py`
+- `tests/fixtures/` — 四厂商示例配置（simple + complex + paloalto-set）
+- `tests/test_parsers.py`, `test_analyzers.py`, `test_trace.py`, `test_exporters.py`, `test_cli.py`
+- 572 个测试全部通过
 
 ### 文档
 - `README.md` — 项目首页
@@ -92,4 +111,5 @@ pip install -e '.[dev]'
 pytest                          # 运行测试
 fw-analyzer --help              # 查看 CLI
 fw-analyzer parse tests/fixtures/huawei_simple.cfg
+fw-analyzer batch /path/to/configs/ -O /path/to/reports/
 ```

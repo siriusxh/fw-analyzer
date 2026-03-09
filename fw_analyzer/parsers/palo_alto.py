@@ -383,6 +383,7 @@ class PaloAltoParser(AbstractParser):
         self.object_store.warnings.clear()
 
         # --- raw_config & referenced_objects ---
+        ET.indent(entry, space="  ")
         raw_config = ET.tostring(entry, encoding="unicode")
         ref_objects: list[str] = []
         for n in src_member_names:

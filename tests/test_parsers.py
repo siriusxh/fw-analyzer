@@ -5,6 +5,8 @@ tests/test_parsers.py
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from fw_analyzer.parsers import get_parser, detect_vendor
@@ -1487,6 +1489,16 @@ class TestHuaweiRawConfig:
                 f"{rule.rule_name}: raw_config missing action keyword"
             )
 
+    def test_security_policy_raw_config_has_header(self, huawei_cfg):
+        """安全策略规则的 raw_config 应以 'security-policy' 开头。"""
+        result = get_parser("huawei").parse(huawei_cfg)
+        sp_rules = [r for r in result.rules if not r.raw_rule_id.startswith("acl")]
+        assert len(sp_rules) >= 1
+        for rule in sp_rules:
+            assert rule.raw_config.startswith("security-policy"), (
+                f"{rule.rule_name}: raw_config missing security-policy header"
+            )
+
     def test_complex_referenced_objects(self, huawei_complex_cfg):
         """引用了 address-group/service-set 的规则应填充 referenced_objects。"""
         result = get_parser("huawei").parse(huawei_complex_cfg)
@@ -1515,6 +1527,16 @@ class TestHuaweiRawConfig:
         assert len(acl_rules) >= 1
         for rule in acl_rules:
             assert rule.raw_config != "", f"{rule.raw_rule_id} missing raw_config"
+
+    def test_acl_raw_config_has_header(self, huawei_complex_cfg):
+        """ACL 规则的 raw_config 应以 'acl number' 开头。"""
+        result = get_parser("huawei").parse(huawei_complex_cfg)
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        assert len(acl_rules) >= 1
+        for rule in acl_rules:
+            assert rule.raw_config.startswith("acl number"), (
+                f"{rule.raw_rule_id}: raw_config missing acl number header"
+            )
 
 
 class TestCiscoAsaRawConfig:
@@ -1569,6 +1591,15 @@ class TestPaloAltoXmlRawConfig:
         for rule in result.rules:
             assert "<entry" in rule.raw_config, (
                 f"{rule.rule_name}: raw_config not XML"
+            )
+
+    def test_raw_config_is_indented(self, paloalto_cfg):
+        """raw_config XML 应包含缩进（非单行密集格式）。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        for rule in result.rules:
+            # 缩进后的 XML 应包含换行符
+            assert "\n" in rule.raw_config, (
+                f"{rule.rule_name}: raw_config XML not indented"
             )
 
     def test_referenced_objects_contains_groups(self, paloalto_cfg):
@@ -1630,6 +1661,18 @@ class TestPaloAltoSetRawConfig:
         deny_all = [r for r in result.rules if r.rule_name == "deny-all"][0]
         assert deny_all.referenced_objects == []
 
+    def test_inline_ip_filtered_from_referenced_objects(self, paloalto_set_complex_cfg):
+        """内联 IP 字面量（如 10.99.0.1）不应出现在 referenced_objects 中。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_complex_cfg)
+        inline_rule = [r for r in result.rules if r.rule_name == "permit-inline-ip"][0]
+        for obj_name in inline_rule.referenced_objects:
+            # 不应包含裸 IP 或 CIDR
+            assert not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?$", obj_name), (
+                f"IP literal '{obj_name}' should be filtered from referenced_objects"
+            )
+        # 但应包含服务名
+        assert "svc-dns-tcp" in inline_rule.referenced_objects
+
 
 class TestFortinetRawConfig:
     """Fortinet 解析器 raw_config 和 referenced_objects 测试。"""
@@ -1646,6 +1689,14 @@ class TestFortinetRawConfig:
         for rule in result.rules:
             assert "edit" in rule.raw_config, (
                 f"{rule.rule_name}: raw_config missing 'edit'"
+            )
+
+    def test_raw_config_has_policy_header(self, fortinet_cfg):
+        """raw_config 应以 'config firewall policy' 开头。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        for rule in result.rules:
+            assert rule.raw_config.startswith("config firewall policy"), (
+                f"{rule.rule_name}: raw_config missing policy header"
             )
 
     def test_referenced_objects_for_https(self, fortinet_cfg):
