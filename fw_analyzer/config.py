@@ -45,8 +45,10 @@ DEFAULT_HIGH_RISK_TCP_PORTS: list[int] = [
     25,         # SMTP
     53,         # DNS（TCP）
     110,        # POP3
+    139,        # NetBIOS Session（SMB/CIFS）
     143,        # IMAP
     389,        # LDAP
+    445,        # SMB/CIFS（直接 TCP）
     512, 513, 514,  # rsh/rexec/rlogin
     1433,       # MSSQL
     1521,       # Oracle
@@ -56,18 +58,20 @@ DEFAULT_HIGH_RISK_TCP_PORTS: list[int] = [
     5432,       # PostgreSQL
     5900,       # VNC
     6379,       # Redis
+    10022,      # 自定义 SSH
     27017,      # MongoDB
 ]
 
 DEFAULT_HIGH_RISK_UDP_PORTS: list[int] = [
     53,         # DNS
     69,         # TFTP
+    137, 138,   # NetBIOS Name/Datagram（CIFS 相关）
     161, 162,   # SNMP/Trap
     514,        # Syslog
 ]
 
 # 过宽规则分级端口
-DEFAULT_OVERWIDE_CRITICAL_PORTS: list[int] = [22, 23, 3389, 4444]
+DEFAULT_OVERWIDE_CRITICAL_PORTS: list[int] = [22, 23, 139, 445, 3389, 4444, 10022]
 DEFAULT_OVERWIDE_HIGH_PORTS: list[int] = [21, 25, 1433, 3306, 5432, 6379, 27017]
 DEFAULT_OVERWIDE_MEDIUM_PORTS: list[int] = [110, 143, 161, 162, 389, 512, 513, 514]
 DEFAULT_OVERWIDE_LOW_PORTS: list[int] = [20, 53, 69, 1521, 5900]
