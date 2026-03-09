@@ -144,8 +144,10 @@ class TestShadowAnalyzer:
         ]
         ShadowAnalyzer().analyze(rules)
         # rule-1 可能被标记 SHADOW_CONFLICT，但不是完全无标签
-        # 行为取决于实现，这里只验证 rule-0 没有 SHADOW 标签
-        assert not any("SHADOW" in t for t in rules[0].analysis_tags)
+        # rule-0 不应被标记为 SHADOW:by=（即不应被别人覆盖）
+        assert not any(t.startswith("SHADOW:by=") for t in rules[0].analysis_tags)
+        # rule-0 可以有 SHADOW_CONFLICT_OTHERS 标签（因为它覆盖了 rule-1）
+        assert any("SHADOW_CONFLICT_OTHERS:rule-1" in t for t in rules[0].analysis_tags)
 
     def test_disabled_rules_skipped(self):
         """禁用规则不参与影子检测（既不会成为覆盖者也不会被标记）。"""
@@ -1494,3 +1496,82 @@ class TestFlatRuleShadowMethods:
         rule.url_category = "streaming"
         d = rule.to_dict()
         assert d["url_category"] == "streaming"
+
+
+# ------------------------------------------------------------------
+# SHADOW_OTHERS / SHADOW_CONFLICT_OTHERS 正向标签
+# ------------------------------------------------------------------
+
+class TestShadowOthersTag:
+    """当 rule_a 覆盖 rule_b 时，rule_a 应获得 SHADOW_OTHERS 标签。"""
+
+    def test_shadow_others_basic(self):
+        """rule_a(any→any) 覆盖 rule_b(specific→specific)，rule_a 应有 SHADOW_OTHERS 标签。"""
+        rules = [
+            _make_rule(0, action="permit"),  # any → any
+            _make_rule(1, action="permit", src="10.1.1.0/24", dst="10.2.2.0/24"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        # rule_b 应被标记为 SHADOW
+        assert any("SHADOW:by=rule-0" in t for t in rules[1].analysis_tags)
+        # rule_a 应被标记为 SHADOW_OTHERS
+        assert any("SHADOW_OTHERS:rule-1" in t for t in rules[0].analysis_tags)
+
+    def test_shadow_others_multiple_victims(self):
+        """rule_a 覆盖多条规则，应有多个 SHADOW_OTHERS 标签。"""
+        rules = [
+            _make_rule(0, action="permit"),  # any → any
+            _make_rule(1, action="permit", src="10.1.1.0/24"),
+            _make_rule(2, action="permit", src="10.2.2.0/24"),
+            _make_rule(3, action="permit", dst="10.3.3.0/24"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        fwd_tags = [t for t in rules[0].analysis_tags if t.startswith("SHADOW_OTHERS:")]
+        assert len(fwd_tags) == 3
+        assert "SHADOW_OTHERS:rule-1" in fwd_tags
+        assert "SHADOW_OTHERS:rule-2" in fwd_tags
+        assert "SHADOW_OTHERS:rule-3" in fwd_tags
+
+    def test_shadow_conflict_others_tag(self):
+        """rule_a(permit) 覆盖 rule_b(deny)，rule_a 应有 SHADOW_CONFLICT_OTHERS 标签。"""
+        rules = [
+            _make_rule(0, action="permit"),  # permit any → any
+            _make_rule(1, action="deny", src="10.1.1.0/24"),  # deny specific
+        ]
+        ShadowAnalyzer().analyze(rules)
+        # rule_b tagged as conflict
+        assert any("SHADOW_CONFLICT:by=rule-0" in t for t in rules[1].analysis_tags)
+        # rule_a tagged as conflict-others
+        assert any("SHADOW_CONFLICT_OTHERS:rule-1" in t for t in rules[0].analysis_tags)
+
+    def test_shadow_others_no_tag_when_no_shadow(self):
+        """不相交的规则，不应有 SHADOW_OTHERS 标签。"""
+        rules = [
+            _make_rule(0, action="permit", src="10.1.1.0/24"),
+            _make_rule(1, action="permit", src="10.2.2.0/24"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert not any(t.startswith("SHADOW_OTHERS:") for t in rules[0].analysis_tags)
+        assert not any(t.startswith("SHADOW_OTHERS:") for t in rules[1].analysis_tags)
+
+    def test_shadow_others_in_shadow_tags(self):
+        """SHADOW_OTHERS 标签应出现在 shadow_tags() 返回值中。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = ["SHADOW_OTHERS:rule-1", "OVERWIDE:HIGH"]
+        assert "SHADOW_OTHERS:rule-1" in rule.shadow_tags()
+        assert "OVERWIDE:HIGH" not in rule.shadow_tags()
+        assert "OVERWIDE:HIGH" in rule.non_shadow_tags()
+        assert "SHADOW_OTHERS:rule-1" not in rule.non_shadow_tags()
+
+    def test_shadow_conflict_others_in_shadow_tags(self):
+        """SHADOW_CONFLICT_OTHERS 标签也应归入 shadow_tags()。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = ["SHADOW_CONFLICT_OTHERS:rule-2", "COMPLIANCE:NO_COMMENT"]
+        assert "SHADOW_CONFLICT_OTHERS:rule-2" in rule.shadow_tags()
+        assert "SHADOW_CONFLICT_OTHERS:rule-2" not in rule.non_shadow_tags()
+
+    def test_shadow_others_is_informational(self):
+        """SHADOW_OTHERS 标签应被视为信息性标签。"""
+        from fw_analyzer.analyzers.engine import INFORMATIONAL_TAG_PREFIXES
+        assert any("SHADOW_OTHERS:" in p for p in INFORMATIONAL_TAG_PREFIXES)
+        assert any("SHADOW_CONFLICT_OTHERS:" in p for p in INFORMATIONAL_TAG_PREFIXES)

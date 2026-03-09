@@ -23,6 +23,9 @@ from typing import Literal
 from .base import AbstractParser
 from ..models.rule import FlatRule
 from ..models.port_range import PortRange
+
+# ITO 工单号正则（与 compliance.py 中 _ITO_RE 一致）
+_ITO_RE = re.compile(r'ITO[-_ ]?(\d{3,})', re.IGNORECASE)
 from ..models.object_store import AddressObject, ServiceObject
 
 
@@ -357,6 +360,7 @@ class CiscoAsaParser(AbstractParser):
                 action=action,
                 interface=acl_name,
                 log_enabled=log_enabled,
+                comment=self._extract_ito_from_line(m.group(3)),
             )
             rules.append(rule)
 
@@ -365,6 +369,24 @@ class CiscoAsaParser(AbstractParser):
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_ito_from_line(raw_line: str) -> str:
+        """从 ACL 原始行中提取 ITO 工单号（去重、排序），用于填充 comment 字段。
+
+        扫描 object-group / object 名称中的 ITO 编号，返回逗号分隔的
+        规范化格式（如 "ITO-37961, ITO-40213"），未找到返回空字符串。
+        """
+        matches = _ITO_RE.findall(raw_line)
+        if not matches:
+            return ""
+        # 去重并保持首次出现顺序
+        seen: dict[str, None] = {}
+        for num in matches:
+            key = f"ITO-{num}"
+            if key not in seen:
+                seen[key] = None
+        return ", ".join(seen)
 
     def _parse_acl_service(
         self, rest: str, rule_id: str
@@ -392,6 +414,18 @@ class CiscoAsaParser(AbstractParser):
             svc = ServiceObject(
                 name=proto,
                 protocol="any" if proto == "ip" else proto,
+                src_port=PortRange.any(),
+                dst_port=PortRange.any(),
+            )
+            return [svc], " ".join(tokens[1:])
+
+        # 未知协议名智能回退：如果第一个 token 不是地址关键字且不以数字开头，
+        # 视为未知协议名（如 ipinip, pim, eigrp 等），消费该 token 避免污染后续解析
+        _ADDRESS_KEYWORDS = {"any", "any4", "host", "object", "object-group"}
+        if proto not in _ADDRESS_KEYWORDS and not proto[0].isdigit():
+            svc = ServiceObject(
+                name=proto,
+                protocol=proto,
                 src_port=PortRange.any(),
                 dst_port=PortRange.any(),
             )

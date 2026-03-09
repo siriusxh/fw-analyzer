@@ -175,12 +175,18 @@ class FlatRule:
         return "; ".join(ports) if ports else "any"
 
     def shadow_tags(self) -> list[str]:
-        """返回影子相关标签（SHADOW / SHADOW_CONFLICT）。"""
-        return [t for t in self.analysis_tags if t.startswith(("SHADOW:", "SHADOW_CONFLICT:"))]
+        """返回影子相关标签（SHADOW / SHADOW_CONFLICT / SHADOW_OTHERS / SHADOW_CONFLICT_OTHERS）。"""
+        return [t for t in self.analysis_tags if t.startswith((
+            "SHADOW:", "SHADOW_CONFLICT:",
+            "SHADOW_OTHERS:", "SHADOW_CONFLICT_OTHERS:",
+        ))]
 
     def non_shadow_tags(self) -> list[str]:
-        """返回非影子标签（排除 SHADOW / SHADOW_CONFLICT）。"""
-        return [t for t in self.analysis_tags if not t.startswith(("SHADOW:", "SHADOW_CONFLICT:"))]
+        """返回非影子标签（排除 SHADOW / SHADOW_CONFLICT / SHADOW_OTHERS / SHADOW_CONFLICT_OTHERS）。"""
+        return [t for t in self.analysis_tags if not t.startswith((
+            "SHADOW:", "SHADOW_CONFLICT:",
+            "SHADOW_OTHERS:", "SHADOW_CONFLICT_OTHERS:",
+        ))]
 
     def shadow_str(self) -> str:
         """返回影子标签字符串，多个用 | 分隔。"""

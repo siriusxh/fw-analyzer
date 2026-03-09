@@ -101,10 +101,14 @@ class ShadowAnalyzer:
                 if self._a_covers_b(rule_a, rule_b):
                     if rule_a.action == rule_b.action:
                         tag = f"SHADOW:by={rule_a.raw_rule_id}"
+                        fwd_tag = f"SHADOW_OTHERS:{rule_b.raw_rule_id}"
                     else:
                         tag = f"SHADOW_CONFLICT:by={rule_a.raw_rule_id}"
+                        fwd_tag = f"SHADOW_CONFLICT_OTHERS:{rule_b.raw_rule_id}"
                     if tag not in rule_b.analysis_tags:
                         rule_b.analysis_tags.append(tag)
+                    if fwd_tag not in rule_a.analysis_tags:
+                        rule_a.analysis_tags.append(fwd_tag)
 
     # ------------------------------------------------------------------
     # 索引构建与候选集检索

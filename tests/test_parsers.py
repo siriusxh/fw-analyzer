@@ -1273,3 +1273,191 @@ class TestPaloAltoXmlUrlCategory:
         result = get_parser("paloalto").parse(self.PA_XML_NO_CATEGORY)
         rule = result.rules[0]
         assert rule.url_category == ""
+
+
+# ------------------------------------------------------------------
+# Cisco ASA 未知协议解析
+# ------------------------------------------------------------------
+
+class TestCiscoAsaUnknownProtocol:
+    """Cisco ASA 未知协议名应正确消费 token，不污染地址解析。"""
+
+    CISCO_UNKNOWN_PROTO = """\
+access-list outside extended permit ipinip host 10.1.1.1 host 10.2.2.2 log
+access-list outside extended permit pim host 10.3.3.3 host 10.4.4.4
+access-list outside extended permit tcp host 10.5.5.5 host 10.6.6.6 eq 443
+access-list outside extended deny ip any any
+"""
+
+    def _parse(self):
+        return get_parser("cisco-asa").parse(self.CISCO_UNKNOWN_PROTO)
+
+    def test_ipinip_protocol_parsed(self):
+        """ipinip 应识别为协议名而非地址。"""
+        result = self._parse()
+        rule = result.rules[0]
+        assert len(rule.services) == 1
+        assert rule.services[0].protocol == "ipinip"
+
+    def test_ipinip_src_parsed(self):
+        """ipinip 规则的源地址应为 10.1.1.1/32。"""
+        from ipaddress import IPv4Network
+        result = self._parse()
+        rule = result.rules[0]
+        src_nets = {str(a.network) for a in rule.src_ip if a.network}
+        assert "10.1.1.1/32" in src_nets
+
+    def test_ipinip_dst_parsed(self):
+        """ipinip 规则的目的地址应为 10.2.2.2/32。"""
+        result = self._parse()
+        rule = result.rules[0]
+        dst_nets = {str(a.network) for a in rule.dst_ip if a.network}
+        assert "10.2.2.2/32" in dst_nets
+
+    def test_pim_protocol_parsed(self):
+        """pim 作为另一种未知协议也应正确解析。"""
+        result = self._parse()
+        rule = result.rules[1]
+        assert rule.services[0].protocol == "pim"
+        src_nets = {str(a.network) for a in rule.src_ip if a.network}
+        assert "10.3.3.3/32" in src_nets
+
+    def test_known_proto_still_works(self):
+        """已知协议 tcp 仍应正常解析（回归保护）。"""
+        from fw_analyzer.models.port_range import PortRange
+        result = self._parse()
+        rule = result.rules[2]
+        assert rule.services[0].protocol == "tcp"
+        assert any(s.dst_port.contains(PortRange.single(443)) for s in rule.services)
+
+    def test_deny_all_still_works(self):
+        """deny ip any any 仍应正常解析。"""
+        result = self._parse()
+        last = result.rules[-1]
+        assert last.action == "deny"
+        assert last.services[0].protocol == "any"  # ip → any
+
+
+# ------------------------------------------------------------------
+# 华为 ACL 未知协议解析
+# ------------------------------------------------------------------
+
+class TestHuaweiUnknownProtocol:
+    """华为 ACL 未知协议名应正确消费 token，不污染地址解析。"""
+
+    HUAWEI_UNKNOWN_PROTO = """\
+acl number 3100
+ rule 0 permit esp source 10.0.0.0 0.0.0.255
+ rule 1 permit ah source 10.1.0.0 0.0.255.255 destination 10.2.0.0 0.0.255.255
+ rule 2 permit tcp source 10.3.0.0 0.0.0.255 destination-port eq 22
+ rule 3 permit ipinip source 10.4.0.0 0.0.0.255
+"""
+
+    def _parse(self):
+        return get_parser("huawei").parse(self.HUAWEI_UNKNOWN_PROTO)
+
+    def test_esp_protocol_parsed(self):
+        """esp 应识别为协议名。"""
+        result = self._parse()
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_0 = [r for r in acl_rules if "rule0" in r.raw_rule_id][0]
+        assert any(s.protocol == "esp" for s in rule_0.services)
+
+    def test_esp_source_parsed(self):
+        """esp 规则的源地址应为 10.0.0.0/24。"""
+        result = self._parse()
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_0 = [r for r in acl_rules if "rule0" in r.raw_rule_id][0]
+        src_nets = {str(a.network) for a in rule_0.src_ip if a.network}
+        assert "10.0.0.0/24" in src_nets
+
+    def test_ah_protocol_and_addresses(self):
+        """ah 协议的源和目的地址应正确解析。"""
+        result = self._parse()
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_1 = [r for r in acl_rules if "rule1" in r.raw_rule_id][0]
+        assert any(s.protocol == "ah" for s in rule_1.services)
+        src_nets = {str(a.network) for a in rule_1.src_ip if a.network}
+        dst_nets = {str(a.network) for a in rule_1.dst_ip if a.network}
+        assert "10.1.0.0/16" in src_nets
+        assert "10.2.0.0/16" in dst_nets
+
+    def test_known_proto_regression(self):
+        """已知协议 tcp 仍应正常解析。"""
+        from fw_analyzer.models.port_range import PortRange
+        result = self._parse()
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_2 = [r for r in acl_rules if "rule2" in r.raw_rule_id][0]
+        assert any(s.protocol == "tcp" for s in rule_2.services)
+        assert any(
+            s.dst_port.contains(PortRange.single(22)) for s in rule_2.services
+        )
+
+    def test_ipinip_still_works(self):
+        """ipinip 作为已在白名单中的协议仍应正常解析。"""
+        result = self._parse()
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        rule_3 = [r for r in acl_rules if "rule3" in r.raw_rule_id][0]
+        assert any(s.protocol == "ipinip" for s in rule_3.services)
+
+
+# ------------------------------------------------------------------
+# Cisco ASA ITO 工单号提取
+# ------------------------------------------------------------------
+
+class TestCiscoAsaTicketExtraction:
+    """Cisco ASA 应从 object-group 名称中提取 ITO 工单号到 comment 字段。"""
+
+    CISCO_ITO = """\
+object-group network ITO-40213-SRC
+ network-object host 10.1.1.1
+
+object-group network ITO-40213-DST
+ network-object host 10.2.2.2
+
+object-group service ITO-40213-ports tcp
+ port-object eq 443
+
+access-list outside extended permit tcp object-group ITO-40213-SRC object-group ITO-40213-DST object-group ITO-40213-ports log
+access-list outside extended permit ip host 10.3.3.3 host 10.4.4.4
+access-list outside extended permit tcp object-group ITO-37961-source object-group ITO-40213-DST eq 80
+"""
+
+    def _parse(self):
+        return get_parser("cisco-asa").parse(self.CISCO_ITO)
+
+    def test_ito_extracted_single(self):
+        """含单个 ITO 编号的行应提取到 comment。"""
+        result = self._parse()
+        rule_0 = result.rules[0]
+        assert "ITO-40213" in rule_0.comment
+
+    def test_ito_deduped(self):
+        """同一行多次出现的 ITO 编号应去重。"""
+        result = self._parse()
+        rule_0 = result.rules[0]
+        # ITO-40213 出现 3 次（SRC, DST, ports），comment 应只有一个
+        assert rule_0.comment.count("ITO-40213") == 1
+
+    def test_no_ito_empty_comment(self):
+        """无 ITO 引用的 ACL 行 comment 应为空。"""
+        result = self._parse()
+        rule_1 = result.rules[1]
+        assert rule_1.comment == ""
+
+    def test_multiple_ito_numbers(self):
+        """含多个不同 ITO 编号的行应全部提取。"""
+        result = self._parse()
+        rule_2 = result.rules[2]
+        assert "ITO-37961" in rule_2.comment
+        assert "ITO-40213" in rule_2.comment
+
+    def test_ticket_populated_after_compliance(self):
+        """经合规分析后 ticket 字段应自动填充。"""
+        from fw_analyzer.analyzers.compliance import ComplianceAnalyzer
+        from fw_analyzer.config import AnalyzerConfig
+        result = self._parse()
+        config = AnalyzerConfig()
+        ComplianceAnalyzer().analyze(result.rules, config)
+        rule_0 = result.rules[0]
+        assert rule_0.ticket == "ITO-40213"

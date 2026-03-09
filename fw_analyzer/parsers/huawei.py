@@ -554,7 +554,19 @@ class HuaweiParser(AbstractParser):
             proto = proto_match.group(1).lower()
             body = body[proto_match.end():]
         else:
-            proto = "ip"
+            # 未知协议名回退：如果第一个 token 是字母开头的标识符且不是 ACL 关键字，
+            # 视为未知协议名（如 esp, ah, sctp, pim 等），消费它；
+            # 也支持数字协议号（0-255）
+            _ACL_KEYWORDS = {"source", "destination", "destination-port",
+                             "time-range", "vpn-instance", "rule"}
+            unknown_proto_m = re.match(
+                r"([a-zA-Z][a-zA-Z0-9_-]*|\d{1,3})\s+", body,
+            )
+            if unknown_proto_m and unknown_proto_m.group(1).lower() not in _ACL_KEYWORDS:
+                proto = unknown_proto_m.group(1).lower()
+                body = body[unknown_proto_m.end():]
+            else:
+                proto = "ip"
 
         src_addrs: list[AddressObject] = self.object_store.resolve_address("any")
         dst_addrs: list[AddressObject] = self.object_store.resolve_address("any")
