@@ -34,6 +34,16 @@ from .exporters.shadow_detail_exporter import ShadowDetailExporter
 
 
 # ------------------------------------------------------------------
+# 输出文件后缀常量
+# ------------------------------------------------------------------
+
+_SUFFIX_SUMMARY_CSV = "_summary.csv"
+_SUFFIX_SUMMARY_MD = "_summary.md"
+_SUFFIX_SHADOW_DETAIL_CSV = "_shadow_detail.csv"
+_SUFFIX_SHADOW_DETAIL_MD = "_shadow_detail.md"
+
+
+# ------------------------------------------------------------------
 # 共用参数装饰器
 # ------------------------------------------------------------------
 
@@ -349,17 +359,49 @@ def cmd_parse(file: str, vendor: str, config: str | None, output: str | None, fm
 @click.argument("file", type=click.Path(exists=True, readable=True))
 @_common_options
 @click.option(
+    "--output-dir", "-O", "output_dir",
+    default=None,
+    metavar="DIR",
+    help=(
+        "输出目录（自动命名）。自动生成 {stem}_summary.csv、{stem}_summary.md、"
+        "{stem}_shadow_detail.csv、{stem}_shadow_detail.md 四个文件。"
+        "不可与 -o / --shadow-detail 同时使用。"
+    ),
+)
+@click.option(
     "--shadow-detail", "shadow_detail",
     default=None,
     metavar="PREFIX",
     help="生成 Shadow 详细报告。指定输出文件名前缀，将生成 PREFIX.csv 和 PREFIX.md 两个文件。",
 )
 def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, fmt: str,
-                shadow_detail: str | None):
+                output_dir: str | None, shadow_detail: str | None):
     """解析并分析防火墙配置，检测影子规则、冗余规则、过宽规则和合规问题。
 
     FILE 为防火墙配置文件路径。
+
+    支持两种输出模式：
+
+    \b
+    1) 手动模式（默认）：
+       fw-analyzer analyze config.txt -f csv -o report.csv
+       fw-analyzer analyze config.txt --shadow-detail /path/prefix
+
+    \b
+    2) 自动命名模式（-O）：
+       fw-analyzer analyze config.txt -O /path/to/reports/
+       自动生成以下文件：
+         {stem}_summary.csv           — 主分析报告 CSV
+         {stem}_summary.md            — 主分析报告 Markdown
+         {stem}_shadow_detail.csv     — 影子规则详细报告 CSV
+         {stem}_shadow_detail.md      — 影子规则详细报告 Markdown
     """
+    # 互斥校验
+    if output_dir and (output or shadow_detail):
+        raise click.ClickException(
+            "-O/--output-dir 不可与 -o/--output 或 --shadow-detail 同时使用。"
+        )
+
     content = _read_file(file)
     parser = _detect_and_get_parser(content, vendor)
 
@@ -385,6 +427,43 @@ def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, 
         err=True,
     )
 
+    # ------ 自动命名模式 (-O) ------
+    if output_dir:
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        stem = Path(file).stem
+
+        # Summary CSV
+        csv_out = CsvExporter().export(result)
+        p = out_path / f"{stem}{_SUFFIX_SUMMARY_CSV}"
+        p.write_text(csv_out, encoding="utf-8")
+
+        # Summary Markdown
+        md_out = MarkdownExporter().export(result)
+        p = out_path / f"{stem}{_SUFFIX_SUMMARY_MD}"
+        p.write_text(md_out, encoding="utf-8")
+
+        # Shadow Detail CSV + MD
+        sd_exporter = ShadowDetailExporter(config_text=content)
+        sd_csv = sd_exporter.export_csv(result)
+        p = out_path / f"{stem}{_SUFFIX_SHADOW_DETAIL_CSV}"
+        p.write_text(sd_csv, encoding="utf-8")
+
+        sd_md = sd_exporter.export_markdown(result)
+        p = out_path / f"{stem}{_SUFFIX_SHADOW_DETAIL_MD}"
+        p.write_text(sd_md, encoding="utf-8")
+
+        click.echo(
+            f"\n报告已生成到: {out_path.resolve()}\n"
+            f"  {stem}{_SUFFIX_SUMMARY_CSV}\n"
+            f"  {stem}{_SUFFIX_SUMMARY_MD}\n"
+            f"  {stem}{_SUFFIX_SHADOW_DETAIL_CSV}\n"
+            f"  {stem}{_SUFFIX_SHADOW_DETAIL_MD}",
+            err=True,
+        )
+        return
+
+    # ------ 手动模式 ------
     if fmt == "table":
         out = _format_rules_table(result)
     elif fmt == "csv":
@@ -477,8 +556,8 @@ def cmd_batch(
     输出文件以原配置文件名（去掉扩展名）为前缀，添加报告类型后缀：
 
     \b
-      {stem}_analysis.csv           — 主分析报告 CSV
-      {stem}_analysis.md            — 主分析报告 Markdown
+      {stem}_summary.csv            — 主分析报告 CSV
+      {stem}_summary.md             — 主分析报告 Markdown
       {stem}_shadow_detail.csv      — 影子规则详细报告 CSV
       {stem}_shadow_detail.md       — 影子规则详细报告 Markdown
 
@@ -560,13 +639,13 @@ def cmd_batch(
 
         if gen_csv:
             csv_out = CsvExporter().export(result)
-            p = out_dir / f"{stem}_analysis.csv"
+            p = out_dir / f"{stem}{_SUFFIX_SUMMARY_CSV}"
             p.write_text(csv_out, encoding="utf-8")
             file_count += 1
 
         if gen_md:
             md_out = MarkdownExporter().export(result)
-            p = out_dir / f"{stem}_analysis.md"
+            p = out_dir / f"{stem}{_SUFFIX_SUMMARY_MD}"
             p.write_text(md_out, encoding="utf-8")
             file_count += 1
 
@@ -574,12 +653,12 @@ def cmd_batch(
             sd_exporter = ShadowDetailExporter(config_text=content)
             if gen_shadow_csv:
                 sd_csv = sd_exporter.export_csv(result)
-                p = out_dir / f"{stem}_shadow_detail.csv"
+                p = out_dir / f"{stem}{_SUFFIX_SHADOW_DETAIL_CSV}"
                 p.write_text(sd_csv, encoding="utf-8")
                 file_count += 1
             if gen_shadow_md:
                 sd_md = sd_exporter.export_markdown(result)
-                p = out_dir / f"{stem}_shadow_detail.md"
+                p = out_dir / f"{stem}{_SUFFIX_SHADOW_DETAIL_MD}"
                 p.write_text(sd_md, encoding="utf-8")
                 file_count += 1
 

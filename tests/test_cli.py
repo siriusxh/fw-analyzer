@@ -173,6 +173,77 @@ class TestCliAnalyze:
 
 
 # ======================================================================
+# TestCliAnalyzeOutputDir
+# ======================================================================
+
+
+class TestCliAnalyzeOutputDir:
+    """analyze -O (自动命名模式) 测试。"""
+
+    def test_analyze_output_dir_generates_all_reports(self, runner, huawei_path, tmp_path):
+        """-O 模式自动生成 4 个报告文件，命名为 {stem}_summary / _shadow_detail。"""
+        out = tmp_path / "reports"
+        result = runner.invoke(cli, [
+            "analyze", huawei_path, "--vendor", "huawei", "-O", str(out),
+        ])
+        assert result.exit_code == 0
+        assert "报告已生成到" in result.output
+        # 检查 4 个文件全部存在
+        assert (out / "huawei_simple_summary.csv").exists()
+        assert (out / "huawei_simple_summary.md").exists()
+        assert (out / "huawei_simple_shadow_detail.csv").exists()
+        assert (out / "huawei_simple_shadow_detail.md").exists()
+        # 应该正好 4 个文件
+        assert len(list(out.iterdir())) == 4
+
+    def test_analyze_output_dir_creates_directory(self, runner, huawei_path, tmp_path):
+        """输出目录不存在时自动创建（含嵌套路径）。"""
+        out = tmp_path / "nested" / "deep" / "reports"
+        assert not out.exists()
+        result = runner.invoke(cli, [
+            "analyze", huawei_path, "--vendor", "huawei", "-O", str(out),
+        ])
+        assert result.exit_code == 0
+        assert out.exists()
+        assert len(list(out.iterdir())) == 4
+
+    def test_analyze_output_dir_mutual_exclusion_with_output(self, runner, huawei_path, tmp_path):
+        """-O 与 -o 互斥，应报错。"""
+        out_dir = tmp_path / "reports"
+        out_file = tmp_path / "report.csv"
+        result = runner.invoke(cli, [
+            "analyze", huawei_path, "--vendor", "huawei",
+            "-O", str(out_dir), "-o", str(out_file),
+        ])
+        assert result.exit_code != 0
+        assert "不可与" in result.output
+
+    def test_analyze_output_dir_mutual_exclusion_with_shadow_detail(self, runner, huawei_path, tmp_path):
+        """-O 与 --shadow-detail 互斥，应报错。"""
+        out_dir = tmp_path / "reports"
+        result = runner.invoke(cli, [
+            "analyze", huawei_path, "--vendor", "huawei",
+            "-O", str(out_dir), "--shadow-detail", str(tmp_path / "sd"),
+        ])
+        assert result.exit_code != 0
+        assert "不可与" in result.output
+
+    def test_analyze_output_dir_file_content_valid(self, runner, huawei_path, tmp_path):
+        """-O 模式生成的文件内容有效（CSV 含 BOM、MD 含表格）。"""
+        out = tmp_path / "reports"
+        result = runner.invoke(cli, [
+            "analyze", huawei_path, "--vendor", "huawei", "-O", str(out),
+        ])
+        assert result.exit_code == 0
+        # CSV 应含 BOM
+        csv_content = (out / "huawei_simple_summary.csv").read_text(encoding="utf-8")
+        assert csv_content.startswith("\ufeff")
+        # Markdown 应含表格分隔符
+        md_content = (out / "huawei_simple_summary.md").read_text(encoding="utf-8")
+        assert "|" in md_content
+
+
+# ======================================================================
 # TestCliTrace
 # ======================================================================
 
@@ -559,19 +630,19 @@ class TestCliBatch:
         assert len(report_files) == 12  # 3 files × 4 reports
 
     def test_batch_output_naming(self, runner, batch_dir, out_dir):
-        """验证输出文件命名：{stem}_analysis.csv 等。"""
+        """验证输出文件命名：{stem}_summary.csv 等。"""
         result = runner.invoke(cli, [
             "batch", str(batch_dir), "-O", str(out_dir),
         ])
         assert result.exit_code == 0
         # 检查华为文件的输出命名
-        assert (out_dir / "huawei_simple_analysis.csv").exists()
-        assert (out_dir / "huawei_simple_analysis.md").exists()
+        assert (out_dir / "huawei_simple_summary.csv").exists()
+        assert (out_dir / "huawei_simple_summary.md").exists()
         assert (out_dir / "huawei_simple_shadow_detail.csv").exists()
         assert (out_dir / "huawei_simple_shadow_detail.md").exists()
         # 检查 Cisco 文件的输出命名
-        assert (out_dir / "cisco_asa_simple_analysis.csv").exists()
-        assert (out_dir / "cisco_asa_simple_analysis.md").exists()
+        assert (out_dir / "cisco_asa_simple_summary.csv").exists()
+        assert (out_dir / "cisco_asa_simple_summary.md").exists()
 
     def test_batch_skip_unrecognized(self, runner, batch_dir, out_dir):
         """混入不可识别的文件，应跳过并打印警告。"""
@@ -622,8 +693,8 @@ class TestCliBatch:
         report_files = list(out_dir.iterdir())
         assert len(report_files) == 6  # 3 files × 2 reports
         # 应有 analysis 文件，不应有 shadow_detail
-        assert (out_dir / "huawei_simple_analysis.csv").exists()
-        assert (out_dir / "huawei_simple_analysis.md").exists()
+        assert (out_dir / "huawei_simple_summary.csv").exists()
+        assert (out_dir / "huawei_simple_summary.md").exists()
         assert not (out_dir / "huawei_simple_shadow_detail.csv").exists()
 
     def test_batch_reports_csv_only(self, runner, batch_dir, out_dir):
@@ -635,7 +706,7 @@ class TestCliBatch:
         report_files = list(out_dir.iterdir())
         assert len(report_files) == 3  # 3 files × 1 csv
         for f in report_files:
-            assert f.name.endswith("_analysis.csv")
+            assert f.name.endswith("_summary.csv")
 
     def test_batch_reports_markdown_only(self, runner, batch_dir, out_dir):
         """--reports markdown 只生成 Markdown。"""
@@ -646,7 +717,7 @@ class TestCliBatch:
         report_files = list(out_dir.iterdir())
         assert len(report_files) == 3  # 3 files × 1 md
         for f in report_files:
-            assert f.name.endswith("_analysis.md")
+            assert f.name.endswith("_summary.md")
 
     def test_batch_reports_shadow_detail(self, runner, batch_dir, out_dir):
         """--reports shadow-detail 只生成影子详细报告。"""
@@ -693,7 +764,7 @@ class TestCliBatch:
         ])
         assert result.exit_code == 0
         assert "处理 1 个文件" in result.output
-        assert (out / "huawei_simple_analysis.csv").exists()
+        assert (out / "huawei_simple_summary.csv").exists()
 
     def test_batch_output_dir_created(self, runner, batch_dir, tmp_path):
         """输出目录不存在时自动创建。"""

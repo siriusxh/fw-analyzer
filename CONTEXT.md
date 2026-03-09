@@ -75,12 +75,19 @@
   - 自动识别厂商，不可识别的文件跳过并警告
   - `--reports` 选项控制生成报告类型（all/summary/csv/markdown/shadow-detail）
   - `--recursive` 递归扫描子目录
-  - 输出文件名：`{原文件stem}_{报告类型}.{csv/md}`
+  - 输出文件名：`{原文件stem}_summary.{csv/md}` + `{stem}_shadow_detail.{csv/md}`
+- **Phase 6**: raw_config 质量修复 — 所有 5 个解析器的 raw_config/referenced_objects 全面修正
+  - Shadow Detail Markdown 格式增强（层级标题、原始配置代码块）
+- **Phase 7**: 输出文件命名优化
+  - `analyze` 命令新增 `-O/--output-dir` 自动命名模式（与 `-o`/`--shadow-detail` 互斥）
+  - 统一后缀命名：`_summary.csv`/`_summary.md`/`_shadow_detail.csv`/`_shadow_detail.md`
+  - `batch` 和 `analyze -O` 使用相同的 `_SUFFIX_*` 常量
+  - `cli.py` 中定义后缀常量，避免硬编码字符串
 
 ### 测试
 - `tests/fixtures/` — 四厂商示例配置（simple + complex + paloalto-set）
 - `tests/test_parsers.py`, `test_analyzers.py`, `test_trace.py`, `test_exporters.py`, `test_cli.py`
-- 572 个测试全部通过
+- 572 个测试全部通过（Phase 7 后共 586 个）
 
 ### 文档
 - `README.md` — 项目首页
@@ -111,5 +118,6 @@ pip install -e '.[dev]'
 pytest                          # 运行测试
 fw-analyzer --help              # 查看 CLI
 fw-analyzer parse tests/fixtures/huawei_simple.cfg
+fw-analyzer analyze config.txt -O /path/to/reports/    # 自动命名模式
 fw-analyzer batch /path/to/configs/ -O /path/to/reports/
 ```
