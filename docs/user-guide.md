@@ -348,14 +348,15 @@ cp fw-analyzer.toml.example ~/.fw-analyzer/config.toml
 
 ```toml
 [high_risk_ports]
-tcp = [21, 23, 3389, 3306, 5432]  # TCP 高危端口
-udp = [161, 162, 69]              # UDP 高危端口
+tcp = [20, 21, 23, 25, 53, 110, 139, 143, 389, 445, 512, 513, 514,
+       1433, 1521, 3306, 3389, 4444, 5432, 5900, 6379, 10022, 27017]
+udp = [53, 69, 137, 138, 161, 162, 514]
 
 [overwide]
-critical_ports = [22, 23, 3389]   # CRITICAL 级别端口
-high_ports     = [21, 3306, 5432] # HIGH 级别端口
-medium_ports   = [110, 143, 389]  # MEDIUM 级别端口
-low_ports      = [53, 1521]       # LOW 级别端口
+critical_ports = [22, 23, 139, 445, 3389, 4444, 10022]  # 远程控制类
+high_ports     = [21, 25, 1433, 3306, 5432, 6379, 27017] # 数据库/服务
+medium_ports   = [110, 143, 161, 162, 389, 512, 513, 514] # 邮件/目录
+low_ports      = [20, 53, 69, 1521, 5900]                 # 常见但需关注
 
 [compliance]
 check_permit_any_any    = true    # 检查 permit any any
@@ -364,7 +365,7 @@ check_cleartext         = true    # 检查明文协议
 check_high_risk_ports   = true    # 检查高危端口
 check_no_comment        = true    # 检查规则是否有注释
 check_disabled_rules    = true    # 检查禁用规则
-cleartext_ports = [21, 23, 80]    # 明文协议端口（可自定义）
+cleartext_ports = [21, 23, 25, 80, 110, 143, 161, 389, 514]
 ```
 
 完整注释版示例见项目根目录 `fw-analyzer.toml.example`。

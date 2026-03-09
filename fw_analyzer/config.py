@@ -5,12 +5,12 @@ fw_analyzer/config.py
 
 配置文件格式（TOML）：
   [high_risk_ports]
-  tcp = [21, 23, 110, 143, 1433, 3306, 3389]
-  udp = [161, 162]
+  tcp = [20, 21, 23, 25, 53, 110, 139, 143, 389, 445, ...]
+  udp = [53, 69, 137, 138, 161, 162, 514]
 
   [overwide]
   # 过宽规则检测的端口分级（CRITICAL/HIGH/MEDIUM/LOW）
-  critical_ports = [22, 23, 3389]
+  critical_ports = [22, 23, 139, 445, 3389, 4444, 10022]
 
   [compliance]
   check_permit_any_any = true
