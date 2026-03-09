@@ -7,6 +7,7 @@
 3. [CLI 子命令详解](#cli-子命令详解)
    - [parse — 规则解析](#parse--规则解析)
    - [analyze — 质量分析](#analyze--质量分析)
+   - [batch — 批量分析](#batch--批量分析)
    - [trace — 访问需求命中分析](#trace--访问需求命中分析)
    - [serve — 启动 REST API](#serve--启动-rest-api)
 4. [支持的输出格式](#支持的输出格式)
@@ -55,6 +56,12 @@ fw-analyzer trace firewall.cfg --src 10.0.0.1 --dst 8.8.8.8 --proto tcp --dport 
 
 # 4. 自动识别厂商（默认行为）
 fw-analyzer parse unknown_fw.cfg --vendor auto
+
+# 5. 分析规则质量，自动生成完整报告（CSV + Markdown + Shadow Detail）到目录
+fw-analyzer analyze firewall.cfg -O ./reports/
+
+# 6. 批量分析整个目录的配置文件
+fw-analyzer batch /path/to/configs/ -O ./reports/
 ```
 
 ---
@@ -116,23 +123,114 @@ fw-analyzer parse firewall.cfg --format markdown
 fw-analyzer analyze <FILE> [选项]
 ```
 
-选项与 `parse` 相同。输出规则表格时，`标签` 列将显示分析标签（见[分析标签说明](#分析标签说明)）。
+**参数：**
 
-**示例：**
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `FILE` | 防火墙配置文件路径 | 必填 |
+| `--vendor / -V` | 厂商类型：`auto` / `huawei` / `cisco-asa` / `paloalto` / `paloalto-set` / `fortinet` | `auto` |
+| `--format / -f` | 输出格式：`table` / `csv` / `json` / `markdown` | `table` |
+| `--output / -o` | 输出文件路径（不指定则输出到 stdout） | stdout |
+| `--output-dir / -O` | 输出目录（自动命名模式），不可与 `-o` / `--shadow-detail` 同时使用 | — |
+| `--shadow-detail` | 生成 Shadow 详细报告，指定文件名前缀（生成 `PREFIX.csv` 和 `PREFIX.md`） | — |
+| `--config / -c` | 自定义配置文件路径（TOML） | 自动查找 |
+
+支持两种输出模式：
+
+**1) 手动模式（默认）** — 通过 `-f`/`-o` 控制单个输出文件：
 
 ```bash
 # 分析华为防火墙，输出 Markdown 报告
 fw-analyzer analyze huawei.cfg --format markdown -o report.md
 
 # 使用自定义高危端口配置
-fw-analyzer analyze fw.cfg --config myconfig.toml --format json
+fw-analyzer analyze fw.cfg --config myconfig.toml --format csv -o report.csv
+
+# 额外生成 Shadow Detail 报告
+fw-analyzer analyze fw.cfg -f csv -o report.csv --shadow-detail /path/to/shadow_prefix
 ```
+
+**2) 自动命名模式（`-O`）** — 自动在指定目录下生成 4 个报告文件：
+
+```bash
+fw-analyzer analyze firewall.cfg -O ./reports/
+```
+
+自动生成以下文件（`{stem}` 为输入文件名去掉扩展名）：
+
+| 文件 | 内容 |
+|------|------|
+| `{stem}_summary.csv` | 主分析报告（CSV，含 BOM） |
+| `{stem}_summary.md` | 主分析报告（Markdown） |
+| `{stem}_shadow_detail.csv` | 影子规则详细报告（CSV） |
+| `{stem}_shadow_detail.md` | 影子规则详细报告（Markdown） |
 
 **输出统计信息（stderr）：**
 
 ```
-规则总数: 42  有问题规则: 7  合规告警: 2
+规则总数: 42  问题规则: 7  信息性标记: 3  合规告警: 2
 ```
+
+---
+
+### batch — 批量分析
+
+批量分析目录中所有可识别的防火墙配置文件，自动识别厂商类型并逐个执行完整分析。
+
+```
+fw-analyzer batch <DIRECTORY> -O <OUTPUT_DIR> [选项]
+```
+
+**参数：**
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `DIRECTORY` | 包含配置文件的目录路径 | 必填 |
+| `--output-dir / -O` | 报告输出目录（不存在时自动创建） | 必填 |
+| `--vendor / -V` | 厂商类型（`auto` 表示对每个文件自动识别） | `auto` |
+| `--reports / -r` | 生成的报告类型（见下表） | `all` |
+| `--recursive` | 递归扫描子目录 | 关闭 |
+| `--config / -c` | 自定义配置文件路径（TOML） | 自动查找 |
+
+**`--reports` 选项值：**
+
+| 值 | 生成内容 |
+|----|----------|
+| `all` | 全部 4 个报告文件（默认） |
+| `summary` | 主报告 CSV + Markdown |
+| `csv` | 仅主报告 CSV |
+| `markdown` | 仅主报告 Markdown |
+| `shadow-detail` | 仅影子详细报告 CSV + Markdown |
+
+**输出文件命名规则：**
+
+以原配置文件名（去掉扩展名）为 `{stem}`，生成以下文件：
+
+- `{stem}_summary.csv` — 主分析报告 CSV
+- `{stem}_summary.md` — 主分析报告 Markdown
+- `{stem}_shadow_detail.csv` — 影子规则详细报告 CSV
+- `{stem}_shadow_detail.md` — 影子规则详细报告 Markdown
+
+**示例：**
+
+```bash
+# 分析目录中所有配置文件，生成全部报告
+fw-analyzer batch /path/to/configs/ -O ./reports/
+
+# 仅生成主报告（CSV + Markdown）
+fw-analyzer batch /path/to/configs/ -O ./reports/ --reports summary
+
+# 仅生成影子详细报告
+fw-analyzer batch /path/to/configs/ -O ./reports/ --reports shadow-detail
+
+# 递归扫描子目录
+fw-analyzer batch /path/to/configs/ -O ./reports/ --recursive
+
+# 指定厂商（跳过自动识别）
+fw-analyzer batch /path/to/configs/ -O ./reports/ --vendor huawei
+```
+
+不可识别的文件会打印警告并跳过，不会终止整个批量流程。
 
 ---
 
@@ -219,6 +317,8 @@ fw-analyzer serve --host 0.0.0.0 --port 8080
 | `csv` | CSV 文件（含 BOM，Excel 兼容） | 导入 Excel / 数据处理 |
 | `json` | JSON 格式 | 程序对接 / 自动化 |
 | `markdown` | Markdown 表格 | 文档生成 / 汇报 |
+
+此外，`analyze` 和 `batch` 子命令还支持生成 **Shadow Detail（影子规则详细报告）**，包含被遮蔽规则和遮蔽规则的原始配置命令及引用对象定义，以 CSV 和 Markdown 两种格式输出。使用 `analyze -O` 或 `batch -O` 时自动生成，也可通过 `analyze --shadow-detail PREFIX` 手动指定。
 
 ---
 
@@ -442,4 +542,4 @@ A: FastAPI 是可选依赖，仅 `serve` 子命令需要。安装方式：
 pip install 'fw-analyzer[api]'
 ```
 
-基础功能（`parse`/`analyze`/`trace`）无需此依赖。
+基础功能（`parse`/`analyze`/`batch`/`trace`）无需此依赖。

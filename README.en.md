@@ -31,6 +31,12 @@ fw-analyzer parse firewall.cfg
 # Analyze rule quality, output Markdown report
 fw-analyzer analyze firewall.cfg --format markdown -o report.md
 
+# Auto-generate full reports (CSV + Markdown + Shadow Detail) to a directory
+fw-analyzer analyze firewall.cfg -O ./reports/
+
+# Batch analyze all config files in a directory
+fw-analyzer batch /path/to/configs/ -O ./reports/
+
 # Check if an access request hits a rule
 fw-analyzer trace firewall.cfg --src 10.0.0.1 --dst 8.8.8.8 --proto tcp --dport 443
 
@@ -59,6 +65,10 @@ fw-analyzer serve --host 0.0.0.0 --port 8000
 | Redundant rules | Duplicate rules with identical 5-tuple signatures |
 | Overwide rules | Rules allowing broad access to high-risk ports (CRITICAL/HIGH/MEDIUM/LOW) |
 | Compliance checks | permit any any, cleartext protocols, high-risk ports, missing comments, disabled rules, no implicit deny, missing ticket, missing logging |
+
+Two output modes are supported:
+- **Manual mode**: `fw-analyzer analyze config.txt -f csv -o report.csv` (optionally add `--shadow-detail PREFIX` for shadow detail reports)
+- **Auto-naming mode**: `fw-analyzer analyze config.txt -O ./reports/` (automatically generates `_summary.csv`, `_summary.md`, `_shadow_detail.csv`, `_shadow_detail.md`)
 
 ### Compliance Tags
 
@@ -93,12 +103,30 @@ Enabled rules without logging are tagged `COMPLIANCE:NO_LOG`.
 - Supports batch CSV queries
 - Disabled rules are automatically skipped; FQDN objects are annotated
 
+### Batch Analysis (batch)
+
+Batch analyze all recognizable config files in a directory, with automatic vendor detection and full analysis for each file.
+
+```bash
+# Analyze all config files in directory, generate all reports
+fw-analyzer batch /path/to/configs/ -O ./reports/
+
+# Generate only summary reports (CSV + Markdown)
+fw-analyzer batch /path/to/configs/ -O ./reports/ --reports summary
+
+# Recursively scan subdirectories
+fw-analyzer batch /path/to/configs/ -O ./reports/ --recursive
+```
+
+Supports `--reports` to control report types (`all`/`summary`/`csv`/`markdown`/`shadow-detail`), `--vendor` to specify a uniform vendor, and `--recursive` for subdirectory scanning. Unrecognizable files are automatically skipped with a warning.
+
 ### Output Formats
 
 - `table`: Colored terminal table (Rich rendering, falls back to plain text)
 - `csv`: UTF-8 with BOM, can be opened directly in Excel
 - `json`: Structured JSON for programmatic consumption
 - `markdown`: Suitable for documentation and reporting (includes tag breakdown summary table)
+- **Shadow Detail report**: Detailed shadow rule report (includes raw config commands and referenced object definitions), auto-generated via `analyze -O` / `batch -O`, or manually via `analyze --shadow-detail PREFIX`
 
 ## Configuration
 

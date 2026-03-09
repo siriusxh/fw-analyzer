@@ -31,6 +31,12 @@ fw-analyzer parse firewall.cfg
 # 分析规则质量，输出 Markdown 报告
 fw-analyzer analyze firewall.cfg --format markdown -o report.md
 
+# 自动生成完整报告（CSV + Markdown + Shadow Detail）到目录
+fw-analyzer analyze firewall.cfg -O ./reports/
+
+# 批量分析目录中所有配置文件
+fw-analyzer batch /path/to/configs/ -O ./reports/
+
 # 检查访问需求是否命中
 fw-analyzer trace firewall.cfg --src 10.0.0.1 --dst 8.8.8.8 --proto tcp --dport 443
 
@@ -59,6 +65,10 @@ fw-analyzer serve --host 0.0.0.0 --port 8000
 | 冗余规则 | 5 元组签名完全相同的重复规则 |
 | 过宽规则 | 允许高危端口宽泛访问（CRITICAL/HIGH/MEDIUM/LOW 四级） |
 | 合规检查 | permit any any、明文协议、高危端口、缺少注释、禁用规则、无隐式拒绝、无工单号、无日志 |
+
+支持两种输出模式：
+- **手动模式**：`fw-analyzer analyze config.txt -f csv -o report.csv`（可搭配 `--shadow-detail PREFIX` 生成影子详细报告）
+- **自动命名模式**：`fw-analyzer analyze config.txt -O ./reports/`（自动生成 `_summary.csv`、`_summary.md`、`_shadow_detail.csv`、`_shadow_detail.md` 四个文件）
 
 ### 合规检查标签
 
@@ -93,12 +103,30 @@ fw-analyzer serve --host 0.0.0.0 --port 8000
 - 支持批量 CSV 查询
 - disabled 规则自动跳过，FQDN 对象标注说明
 
+### 批量分析（batch）
+
+批量分析目录中所有可识别的配置文件，自动识别厂商并逐个执行完整分析。
+
+```bash
+# 分析目录中所有配置文件，生成全部报告
+fw-analyzer batch /path/to/configs/ -O ./reports/
+
+# 仅生成主报告（CSV + Markdown）
+fw-analyzer batch /path/to/configs/ -O ./reports/ --reports summary
+
+# 递归扫描子目录
+fw-analyzer batch /path/to/configs/ -O ./reports/ --recursive
+```
+
+支持 `--reports` 选项控制生成的报告类型（`all`/`summary`/`csv`/`markdown`/`shadow-detail`），`--vendor` 指定统一厂商，`--recursive` 递归扫描子目录。不可识别的文件自动跳过。
+
 ### 输出格式
 
 - `table`：终端彩色表格（Rich 渲染，降级为纯文本）
 - `csv`：UTF-8 with BOM，可直接用 Excel 打开
 - `json`：结构化 JSON，适合程序对接
 - `markdown`：适合文档生成和汇报（含标签分类统计表）
+- **Shadow Detail 报告**：影子规则详细报告（含原始配置命令和引用对象定义），通过 `analyze -O` / `batch -O` 自动生成，或 `analyze --shadow-detail PREFIX` 手动指定
 
 ## 配置文件
 

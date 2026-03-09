@@ -41,6 +41,7 @@ fw-analyzer/
 │   │   ├── huawei.py           # 华为 USG 解析器
 │   │   ├── cisco_asa.py        # Cisco ASA 解析器
 │   │   ├── palo_alto.py        # Palo Alto PAN-OS 解析器（XML）
+│   │   ├── palo_alto_set.py    # Palo Alto PAN-OS 解析器（set 命令）
 │   │   └── fortinet.py         # Fortinet FortiGate 解析器
 │   ├── analyzers/
 │   │   ├── __init__.py
@@ -53,7 +54,9 @@ fw-analyzer/
 │   │   ├── __init__.py
 │   │   ├── csv_exporter.py     # CSV 导出（含 BOM）
 │   │   ├── json_exporter.py    # JSON 导出
-│   │   └── markdown_exporter.py# Markdown 导出
+│   │   ├── markdown_exporter.py# Markdown 导出
+│   │   ├── shadow_detail_exporter.py  # Shadow Detail 导出（CSV + Markdown）
+│   │   └── raw_text_extractor.py      # 原始配置文本提取器（按厂商）
 │   └── api/
 │       ├── __init__.py
 │       ├── main.py             # FastAPI app 实例
@@ -71,10 +74,14 @@ fw-analyzer/
     ├── test_analyzers.py       # 分析器测试
     ├── test_trace.py           # Trace 引擎测试
     ├── test_exporters.py       # 导出器测试
+    ├── test_cli.py             # CLI 集成测试（parse/analyze/batch/trace）
     └── fixtures/
         ├── huawei_simple.cfg
         ├── cisco_asa_simple.cfg
+        ├── cisco_asa_complex.cfg
         ├── paloalto_simple.xml
+        ├── paloalto_complex.xml
+        ├── paloalto_set_simple.cfg
         └── fortinet_simple.cfg
 ```
 
@@ -111,7 +118,8 @@ fw-analyzer/
     │
     ├──→ [CsvExporter]      → str（CSV 文本）
     ├──→ [JsonExporter]     → str（JSON 文本）
-    └──→ [MarkdownExporter] → str（Markdown 文本）
+    ├──→ [MarkdownExporter] → str（Markdown 文本）
+    └──→ [ShadowDetailExporter] → str（Shadow Detail CSV / Markdown）
 ```
 
 **核心原则：**
@@ -254,6 +262,7 @@ self._make_rule(**kwargs)  # 自动填充 vendor 字段
 | 华为 USG | `huawei.py` | 文本（key-value 缩进） | 支持旧版 ACL + 新版 security-policy；`mask` 在 address-group 中是子网掩码，在 ACL rule 中是 wildcard mask |
 | Cisco ASA | `cisco_asa.py` | 文本（扁平层级） | `object`/`object-group` 展开；ACL 中 wildcard mask |
 | Palo Alto | `palo_alto.py` | XML（`xml.etree.ElementTree`） | `address`/`address-group` 两阶段；zone 信息从 `from`/`to` 提取 |
+| Palo Alto (set) | `palo_alto_set.py` | set 命令文本 | 解析 `set rulebase security rules` 格式的配置行 |
 | Fortinet | `fortinet.py` | 层级文本（`config`/`edit`/`next`/`end`） | `firewall address`/`service custom`/`policy` 块解析 |
 
 ---
@@ -345,6 +354,35 @@ class MarkdownExporter:
 ```
 
 **CSV BOM**：`CsvExporter` 输出头部含 `\ufeff`（UTF-8 BOM），方便 Excel 双击直接打开中文列。
+
+### Shadow Detail 导出
+
+`ShadowDetailExporter` 生成影子规则详细报告，包含被遮蔽规则和遮蔽规则的原始配置命令及引用对象定义。
+
+```python
+class ShadowDetailExporter:
+    def __init__(self, config_text: str):
+        """需要原始配置文本用于提取对象定义原文。"""
+
+    def export_csv(self, result: AnalysisResult) -> str:
+        """返回 12 列 CSV 文本（含 BOM）。"""
+
+    def export_markdown(self, result: AnalysisResult) -> str:
+        """返回层级 Markdown 报告（每对影子关系含代码块展示原始配置）。"""
+```
+
+`RawTextExtractor` 是辅助类，按厂商从原始配置文本中提取对象定义原文（地址对象、服务对象等），供 `ShadowDetailExporter` 使用。
+
+```python
+class RawTextExtractor:
+    def __init__(self, config_text: str, vendor: str):
+        """解析原始配置文本，建立对象名到原文片段的映射。"""
+
+    def get_object_text(self, object_name: str) -> str | None:
+        """返回指定对象名的原始配置文本片段。"""
+```
+
+`FlatRule` 的 `raw_config` 和 `referenced_objects` 字段由各解析器在解析阶段填充，供 Shadow Detail 报告使用。
 
 ---
 
@@ -535,7 +573,8 @@ pytest tests/test_trace.py -v
 | `test_parsers.py` | 各厂商解析器：规则数量、动作、地址、服务、警告 |
 | `test_analyzers.py` | 影子规则、冗余规则、过宽规则、合规检查 |
 | `test_trace.py` | 单条查询、批量查询、FQDN 跳过、网段语义 |
-| `test_exporters.py` | CSV/JSON/Markdown 导出格式验证 |
+| `test_exporters.py` | CSV/JSON/Markdown/Shadow Detail 导出格式验证 |
+| `test_cli.py` | CLI 集成测试：parse/analyze/batch/trace 子命令、`-O` 自动命名模式 |
 
 ### 添加测试的规范
 
