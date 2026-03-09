@@ -24,6 +24,7 @@ from .compliance import ComplianceAnalyzer
 INFORMATIONAL_TAG_PREFIXES = (
     "COMPLIANCE:NO_COMMENT",
     "COMPLIANCE:DISABLED_RULES",
+    "URL_CATEGORY_SKIP",
 )
 
 

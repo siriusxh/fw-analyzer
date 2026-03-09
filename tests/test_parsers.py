@@ -1121,3 +1121,155 @@ set rulebase security rules mixed-rule log-setting default
         result = get_parser("paloalto-set").parse(self.PA_SET_APP_MIXED)
         rule = result.rules[0]
         assert rule.services == []
+
+
+# ==================================================================
+# PAN-OS URL 分类（category）字段解析测试
+# ==================================================================
+
+
+class TestPaloAltoSetUrlCategory:
+    """PAN-OS set 格式 URL 分类解析测试。"""
+
+    PA_SET_WITH_CATEGORY = """\
+set rulebase security rules cat-rule from trust
+set rulebase security rules cat-rule to untrust
+set rulebase security rules cat-rule source any
+set rulebase security rules cat-rule destination any
+set rulebase security rules cat-rule service any
+set rulebase security rules cat-rule action allow
+set rulebase security rules cat-rule category [ adult malware ]
+"""
+
+    PA_SET_CATEGORY_ANY = """\
+set rulebase security rules cat-any-rule from trust
+set rulebase security rules cat-any-rule to untrust
+set rulebase security rules cat-any-rule source any
+set rulebase security rules cat-any-rule destination any
+set rulebase security rules cat-any-rule service any
+set rulebase security rules cat-any-rule action allow
+set rulebase security rules cat-any-rule category any
+"""
+
+    PA_SET_NO_CATEGORY = """\
+set rulebase security rules no-cat-rule from trust
+set rulebase security rules no-cat-rule to untrust
+set rulebase security rules no-cat-rule source any
+set rulebase security rules no-cat-rule destination any
+set rulebase security rules no-cat-rule service any
+set rulebase security rules no-cat-rule action allow
+"""
+
+    PA_SET_SINGLE_CATEGORY = """\
+set rulebase security rules single-cat-rule from trust
+set rulebase security rules single-cat-rule to untrust
+set rulebase security rules single-cat-rule source any
+set rulebase security rules single-cat-rule destination any
+set rulebase security rules single-cat-rule service any
+set rulebase security rules single-cat-rule action deny
+set rulebase security rules single-cat-rule category streaming
+"""
+
+    def test_multiple_categories_parsed(self):
+        """多个 URL 分类用分号拼接。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_WITH_CATEGORY)
+        rule = result.rules[0]
+        assert rule.url_category == "adult; malware"
+
+    def test_category_any_treated_as_empty(self):
+        """category=any → url_category 为空。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_CATEGORY_ANY)
+        rule = result.rules[0]
+        assert rule.url_category == ""
+
+    def test_no_category_field_treated_as_empty(self):
+        """无 category 属性 → url_category 为空。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_NO_CATEGORY)
+        rule = result.rules[0]
+        assert rule.url_category == ""
+
+    def test_single_category_parsed(self):
+        """单个非 any 分类被正确解析。"""
+        result = get_parser("paloalto-set").parse(self.PA_SET_SINGLE_CATEGORY)
+        rule = result.rules[0]
+        assert rule.url_category == "streaming"
+
+
+class TestPaloAltoXmlUrlCategory:
+    """PAN-OS XML 格式 URL 分类解析测试。"""
+
+    PA_XML_WITH_CATEGORY = """\
+<config>
+  <devices><entry><vsys><entry>
+    <rulebase><security><rules>
+      <entry name="cat-rule">
+        <from><member>trust</member></from>
+        <to><member>untrust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <service><member>any</member></service>
+        <action>allow</action>
+        <category>
+          <member>adult</member>
+          <member>malware</member>
+        </category>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys></entry></devices>
+</config>
+"""
+
+    PA_XML_CATEGORY_ANY = """\
+<config>
+  <devices><entry><vsys><entry>
+    <rulebase><security><rules>
+      <entry name="cat-any-rule">
+        <from><member>trust</member></from>
+        <to><member>untrust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <service><member>any</member></service>
+        <action>allow</action>
+        <category>
+          <member>any</member>
+        </category>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys></entry></devices>
+</config>
+"""
+
+    PA_XML_NO_CATEGORY = """\
+<config>
+  <devices><entry><vsys><entry>
+    <rulebase><security><rules>
+      <entry name="no-cat-rule">
+        <from><member>trust</member></from>
+        <to><member>untrust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <service><member>any</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys></entry></devices>
+</config>
+"""
+
+    def test_xml_multiple_categories_parsed(self):
+        """XML 多个 URL 分类用分号拼接。"""
+        result = get_parser("paloalto").parse(self.PA_XML_WITH_CATEGORY)
+        rule = result.rules[0]
+        assert rule.url_category == "adult; malware"
+
+    def test_xml_category_any_treated_as_empty(self):
+        """XML category=any → url_category 为空。"""
+        result = get_parser("paloalto").parse(self.PA_XML_CATEGORY_ANY)
+        rule = result.rules[0]
+        assert rule.url_category == ""
+
+    def test_xml_no_category_treated_as_empty(self):
+        """XML 无 category 元素 → url_category 为空。"""
+        result = get_parser("paloalto").parse(self.PA_XML_NO_CATEGORY)
+        rule = result.rules[0]
+        assert rule.url_category == ""

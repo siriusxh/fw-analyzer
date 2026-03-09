@@ -372,6 +372,11 @@ class PaloAltoParser(AbstractParser):
         # --- 描述/注释 ---
         comment = entry.findtext("description") or ""
 
+        # --- URL 分类（category 字段）---
+        cat_members = self._collect_members(entry, "category")
+        cat_filtered = [c for c in cat_members if c.lower() != "any"]
+        url_category = "; ".join(cat_filtered) if cat_filtered else ""
+
         # 转移 object_store 警告到规则
         for sw in self.object_store.warnings:
             rule_warnings.append(Warning.from_store_warning(sw))
@@ -390,6 +395,7 @@ class PaloAltoParser(AbstractParser):
             dst_zone="; ".join(dst_zone),
             enabled=enabled,
             comment=comment,
+            url_category=url_category,
             warnings=rule_warnings,
         )
 

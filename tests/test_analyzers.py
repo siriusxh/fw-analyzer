@@ -1282,3 +1282,215 @@ class TestNoLogTag:
         """FlatRule 默认 log_enabled=True。"""
         rule = _make_rule(0, action="permit")
         assert rule.log_enabled is True
+
+
+# ------------------------------------------------------------------
+# URL_CATEGORY_SKIP 与 Shadow Analyzer 交互
+# ------------------------------------------------------------------
+
+class TestShadowUrlCategorySkip:
+    """测试 URL 分类规则在影子分析中的跳过行为。"""
+
+    def _make_url_cat_rule(
+        self, seq: int, url_category: str = "adult", **kwargs
+    ) -> FlatRule:
+        """构造带 url_category 的 FlatRule。"""
+        rule = _make_rule(seq, **kwargs)
+        rule.url_category = url_category
+        return rule
+
+    def test_url_category_rule_tagged_skip(self):
+        """带 url_category 的 enabled 规则应被标记 URL_CATEGORY_SKIP。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any"),
+            self._make_url_cat_rule(1, url_category="adult; malware",
+                                    action="deny", src="any", dst="any"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert "URL_CATEGORY_SKIP" in rules[1].analysis_tags
+
+    def test_url_category_rule_not_shadowed(self):
+        """带 url_category 的规则不应被标记 SHADOW（它被跳过了）。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any"),
+            self._make_url_cat_rule(1, url_category="adult",
+                                    action="permit", src="192.168.1.0/24", dst="any"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        # 不应有 SHADOW 标签（只有 URL_CATEGORY_SKIP）
+        shadow_tags = [t for t in rules[1].analysis_tags if t.startswith("SHADOW")]
+        assert len(shadow_tags) == 0
+
+    def test_url_category_rule_cannot_shadow_others(self):
+        """带 url_category 的规则不能作为覆盖者去影子其他规则。"""
+        rules = [
+            self._make_url_cat_rule(0, url_category="streaming",
+                                    action="permit", src="any", dst="any"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        # rule-1 不应被 rule-0 影子（rule-0 被排除）
+        assert not any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_url_category_skip_is_informational(self):
+        """URL_CATEGORY_SKIP 应为信息性标签。"""
+        from fw_analyzer.analyzers.engine import _is_informational
+        assert _is_informational("URL_CATEGORY_SKIP")
+
+    def test_disabled_url_category_rule_no_skip_tag(self):
+        """disabled 的 url_category 规则不被标记 URL_CATEGORY_SKIP。"""
+        rules = [
+            self._make_url_cat_rule(0, url_category="adult",
+                                    action="deny", src="any", dst="any",
+                                    enabled=False),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        assert "URL_CATEGORY_SKIP" not in rules[0].analysis_tags
+
+    def test_empty_url_category_not_skipped(self):
+        """url_category 为空的规则正常参与影子检测。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any"),
+            _make_rule(1, action="permit", src="192.168.1.0/24", dst="any"),
+        ]
+        # 确保 url_category 默认为空
+        assert rules[0].url_category == ""
+        assert rules[1].url_category == ""
+        ShadowAnalyzer().analyze(rules)
+        assert any("SHADOW" in t for t in rules[1].analysis_tags)
+
+    def test_mixed_url_category_and_normal_rules(self):
+        """混合场景：url_category 规则被跳过，普通规则正常检测。"""
+        rules = [
+            _make_rule(0, action="permit", src="any", dst="any"),
+            self._make_url_cat_rule(1, url_category="adult",
+                                    action="deny", src="192.168.1.0/24", dst="any"),
+            _make_rule(2, action="permit", src="10.0.0.0/8", dst="any"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        # rule-1（url_category）：有 URL_CATEGORY_SKIP，无 SHADOW
+        assert "URL_CATEGORY_SKIP" in rules[1].analysis_tags
+        assert not any(t.startswith("SHADOW") for t in rules[1].analysis_tags)
+        # rule-2（普通）：被 rule-0 影子
+        assert any("SHADOW" in t for t in rules[2].analysis_tags)
+
+    def test_url_category_skip_tag_not_duplicated(self):
+        """多次调用 analyze 不会重复添加 URL_CATEGORY_SKIP。"""
+        rules = [
+            self._make_url_cat_rule(0, url_category="adult",
+                                    action="permit", src="any", dst="any"),
+        ]
+        ShadowAnalyzer().analyze(rules)
+        ShadowAnalyzer().analyze(rules)
+        count = rules[0].analysis_tags.count("URL_CATEGORY_SKIP")
+        assert count == 1
+
+
+# ------------------------------------------------------------------
+# FlatRule shadow/non-shadow 辅助方法
+# ------------------------------------------------------------------
+
+class TestFlatRuleShadowMethods:
+    """测试 FlatRule 的 shadow_tags / non_shadow_tags / shadow_str / analysis_tags_str。"""
+
+    def test_shadow_tags_empty(self):
+        """无标签 → shadow_tags 为空。"""
+        rule = _make_rule(0)
+        assert rule.shadow_tags() == []
+
+    def test_shadow_tags_extracts_shadow(self):
+        """SHADOW:by=xxx 和 SHADOW_CONFLICT:by=xxx 被提取。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "COMPLIANCE:NO_COMMENT",
+            "SHADOW_CONFLICT:by=rule-1",
+            "OVERWIDE:HIGH",
+        ]
+        assert rule.shadow_tags() == [
+            "SHADOW:by=rule-0",
+            "SHADOW_CONFLICT:by=rule-1",
+        ]
+
+    def test_non_shadow_tags_excludes_shadow(self):
+        """non_shadow_tags 排除 SHADOW 和 SHADOW_CONFLICT。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "COMPLIANCE:NO_COMMENT",
+            "SHADOW_CONFLICT:by=rule-1",
+            "OVERWIDE:HIGH",
+        ]
+        assert rule.non_shadow_tags() == [
+            "COMPLIANCE:NO_COMMENT",
+            "OVERWIDE:HIGH",
+        ]
+
+    def test_shadow_str_format(self):
+        """shadow_str 用 | 分隔。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "SHADOW_CONFLICT:by=rule-1",
+            "COMPLIANCE:NO_LOG",
+        ]
+        assert rule.shadow_str() == "SHADOW:by=rule-0 | SHADOW_CONFLICT:by=rule-1"
+
+    def test_shadow_str_empty_when_no_shadow(self):
+        """无影子标签时 shadow_str 返回空字符串。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = ["COMPLIANCE:NO_COMMENT", "OVERWIDE:HIGH"]
+        assert rule.shadow_str() == ""
+
+    def test_analysis_tags_str_excludes_shadow(self):
+        """analysis_tags_str 不包含 SHADOW 标签。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "COMPLIANCE:NO_COMMENT",
+            "OVERWIDE:HIGH",
+        ]
+        assert rule.analysis_tags_str() == "COMPLIANCE:NO_COMMENT | OVERWIDE:HIGH"
+
+    def test_analysis_tags_str_only_shadow(self):
+        """只有 SHADOW 标签时 analysis_tags_str 为空。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = ["SHADOW:by=rule-0"]
+        assert rule.analysis_tags_str() == ""
+
+    def test_to_dict_shadow_separation(self):
+        """to_dict 中 shadow 和 analysis_tags 分开。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "COMPLIANCE:NO_COMMENT",
+        ]
+        d = rule.to_dict()
+        assert d["shadow"] == ["SHADOW:by=rule-0"]
+        assert d["analysis_tags"] == ["COMPLIANCE:NO_COMMENT"]
+
+    def test_to_csv_row_shadow_separation(self):
+        """to_csv_row 中 shadow 和 analysis_tags 分开。"""
+        rule = _make_rule(0)
+        rule.analysis_tags = [
+            "SHADOW:by=rule-0",
+            "SHADOW_CONFLICT:by=rule-1",
+            "OVERWIDE:HIGH",
+        ]
+        row = rule.to_csv_row()
+        assert row["shadow"] == "SHADOW:by=rule-0 | SHADOW_CONFLICT:by=rule-1"
+        assert row["analysis_tags"] == "OVERWIDE:HIGH"
+
+    def test_to_csv_row_url_category_field(self):
+        """to_csv_row 包含 url_category 字段。"""
+        rule = _make_rule(0)
+        rule.url_category = "adult; malware"
+        row = rule.to_csv_row()
+        assert row["url_category"] == "adult; malware"
+
+    def test_to_dict_url_category_field(self):
+        """to_dict 包含 url_category 字段。"""
+        rule = _make_rule(0)
+        rule.url_category = "streaming"
+        d = rule.to_dict()
+        assert d["url_category"] == "streaming"

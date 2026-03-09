@@ -36,6 +36,8 @@ RULE_CSV_FIELDS = [
     "log_enabled",
     "comment",
     "ticket",
+    "url_category",
+    "shadow",
     "analysis_tags",
     "warnings",
 ]

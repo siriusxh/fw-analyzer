@@ -341,6 +341,12 @@ class PaloAltoSetParser(AbstractParser):
             or props.get("log-end")
         )
 
+        # URL 分类（category 字段）
+        cat_vals = props.get("category", [])
+        # 过滤 "any"，多个分类用分号拼接
+        cat_filtered = [c for c in cat_vals if c.lower() != "any"]
+        url_category = "; ".join(cat_filtered) if cat_filtered else ""
+
         # 收集 object_store 警告
         for sw in self.object_store.warnings:
             rule_warnings.append(Warning.from_store_warning(sw))
@@ -360,6 +366,7 @@ class PaloAltoSetParser(AbstractParser):
             enabled=enabled,
             log_enabled=log_enabled,
             comment=comment,
+            url_category=url_category,
             warnings=rule_warnings,
         )
 

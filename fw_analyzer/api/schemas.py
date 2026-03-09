@@ -54,6 +54,8 @@ class RuleSchema(BaseModel):
     log_enabled: bool
     comment: str
     ticket: str
+    url_category: str
+    shadow: List[str]
     analysis_tags: List[str]
     warnings: List[WarningSchema]
 

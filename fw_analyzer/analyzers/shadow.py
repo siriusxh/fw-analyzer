@@ -50,10 +50,23 @@ class ShadowAnalyzer:
           "SHADOW:by={rule_id}"         - 被完全覆盖且动作相同
           "SHADOW_CONFLICT:by={rule_id}" - 被完全覆盖但动作不同
 
+        URL 分类规则处理：
+          带 url_category 的规则（非 any）在 L7 层面限制了流量范围，
+          工具无法判断其匹配关系，因此：
+          - 不参与影子检测（不作为覆盖者，也不被标记为被覆盖者）
+          - 标记 URL_CATEGORY_SKIP 标签
+
         性能优化：使用 /16 前缀索引 + 协议分桶，将候选集限制在
         可能匹配的规则子集上，减少不必要的 _a_covers_b 调用。
         """
-        enabled = [r for r in rules if r.enabled]
+        # 处理 url_category 规则：标记并排除
+        for r in rules:
+            if r.enabled and r.url_category:
+                tag = "URL_CATEGORY_SKIP"
+                if tag not in r.analysis_tags:
+                    r.analysis_tags.append(tag)
+
+        enabled = [r for r in rules if r.enabled and not r.url_category]
         n = len(enabled)
         if n <= 1:
             return

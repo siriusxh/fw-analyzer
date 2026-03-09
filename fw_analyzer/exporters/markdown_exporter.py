@@ -143,8 +143,8 @@ class MarkdownExporter:
     def _rules_table(self, rules: list[FlatRule]) -> list[str]:
         """生成规则列表 Markdown 表格。"""
         lines = [
-            "| # | ID | 名称 | 动作 | 源IP | 目的IP | 服务 | 启用 | 日志 | 工单号 | 标签 |",
-            "|---|----|----|------|------|--------|------|------|------|--------|------|",
+            "| # | ID | 名称 | 动作 | 源IP | 目的IP | 服务 | 启用 | 日志 | 工单号 | URL分类 | 影子 | 标签 |",
+            "|---|----|----|------|------|--------|------|------|------|--------|---------|------|------|",
         ]
         for r in rules:
             seq = r.seq + 1
@@ -152,12 +152,14 @@ class MarkdownExporter:
             enabled_icon = "✓" if r.enabled else "✗"
             log_icon = "✓" if r.log_enabled else "✗"
             tags = r.analysis_tags_str()
+            shadow = r.shadow_str()
             ticket = r.ticket or "-"
+            url_cat = r.url_category or "-"
             lines.append(
                 f"| {seq} | `{r.raw_rule_id}` | {r.rule_name} | "
                 f"{action_icon} {r.action} | {_md_escape(r.src_ip_str())} | "
                 f"{_md_escape(r.dst_ip_str())} | {_md_escape(r.service_str())} | "
-                f"{enabled_icon} | {log_icon} | {ticket} | {tags} |"
+                f"{enabled_icon} | {log_icon} | {ticket} | {url_cat} | {shadow} | {tags} |"
             )
         return lines
 
@@ -213,6 +215,9 @@ class MarkdownExporter:
             ("合规信息", [
                 ("COMPLIANCE:NO_COMMENT", "COMPLIANCE:NO_COMMENT"),
                 ("COMPLIANCE:DISABLED_RULES", "COMPLIANCE:DISABLED_RULES"),
+            ]),
+            ("分析跳过", [
+                ("URL_CATEGORY_SKIP", "URL_CATEGORY_SKIP"),
             ]),
         ]
 

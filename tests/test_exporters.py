@@ -435,3 +435,141 @@ class TestExportersWithRealParse:
         result = AnalysisEngine().analyze(parse_result)
         out = MarkdownExporter().export(result)
         assert "paloalto" in out.lower() or "pan" in out.lower() or "# 防火墙" in out
+
+
+# ------------------------------------------------------------------
+# CSV 导出器：url_category 和 shadow 列
+# ------------------------------------------------------------------
+
+class TestCsvExporterNewColumns:
+    """测试 CSV 导出器的 url_category 和 shadow 列。"""
+
+    def test_csv_has_url_category_column(self):
+        """CSV 表头包含 url_category。"""
+        result = _make_analysis_result()
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(clean))
+        assert "url_category" in (reader.fieldnames or [])
+
+    def test_csv_has_shadow_column(self):
+        """CSV 表头包含 shadow。"""
+        result = _make_analysis_result()
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(clean))
+        assert "shadow" in (reader.fieldnames or [])
+
+    def test_csv_shadow_column_has_shadow_tags(self):
+        """shadow 列包含 SHADOW 标签。"""
+        result = _make_analysis_result()
+        # rule-1 has "SHADOW:by=rule-0"
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert "SHADOW:by=rule-0" in rows[1]["shadow"]
+
+    def test_csv_analysis_tags_excludes_shadow(self):
+        """analysis_tags 列不包含 SHADOW 标签。"""
+        result = _make_analysis_result()
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert "SHADOW" not in rows[1].get("analysis_tags", "")
+
+    def test_csv_url_category_value(self):
+        """url_category 列包含正确值。"""
+        result = _make_analysis_result()
+        result.rules[0].url_category = "adult; malware"
+        out = CsvExporter().export(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert rows[0]["url_category"] == "adult; malware"
+
+    def test_csv_column_order(self):
+        """url_category 和 shadow 在 ticket 和 analysis_tags 之间。"""
+        from fw_analyzer.exporters.csv_exporter import RULE_CSV_FIELDS
+        ticket_idx = RULE_CSV_FIELDS.index("ticket")
+        url_cat_idx = RULE_CSV_FIELDS.index("url_category")
+        shadow_idx = RULE_CSV_FIELDS.index("shadow")
+        tags_idx = RULE_CSV_FIELDS.index("analysis_tags")
+        assert ticket_idx < url_cat_idx < shadow_idx < tags_idx
+
+
+# ------------------------------------------------------------------
+# JSON 导出器：shadow 分离
+# ------------------------------------------------------------------
+
+class TestJsonExporterShadowSeparation:
+    """测试 JSON 导出器的 shadow/analysis_tags 分离。"""
+
+    def test_json_rule_has_shadow_field(self):
+        """JSON 规则包含 shadow 字段（列表）。"""
+        data = json.loads(JsonExporter().export(_make_analysis_result()))
+        rule = data["rules"][1]  # rule-1 has SHADOW tag
+        assert "shadow" in rule
+        assert isinstance(rule["shadow"], list)
+        assert "SHADOW:by=rule-0" in rule["shadow"]
+
+    def test_json_analysis_tags_no_shadow(self):
+        """JSON 规则的 analysis_tags 不含 SHADOW 标签。"""
+        data = json.loads(JsonExporter().export(_make_analysis_result()))
+        rule = data["rules"][1]
+        assert all("SHADOW" not in t for t in rule["analysis_tags"])
+
+    def test_json_rule_has_url_category(self):
+        """JSON 规则包含 url_category 字段。"""
+        result = _make_analysis_result()
+        result.rules[0].url_category = "streaming"
+        data = json.loads(JsonExporter().export(result))
+        assert data["rules"][0]["url_category"] == "streaming"
+
+
+# ------------------------------------------------------------------
+# Markdown 导出器：URL分类 和 影子 列
+# ------------------------------------------------------------------
+
+class TestMarkdownExporterNewColumns:
+    """测试 Markdown 导出器的 URL分类 和 影子 列。"""
+
+    def test_markdown_table_has_url_category_header(self):
+        """Markdown 规则表头包含 URL分类。"""
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert "URL分类" in out
+
+    def test_markdown_table_has_shadow_header(self):
+        """Markdown 规则表头包含 影子。"""
+        out = MarkdownExporter().export(_make_analysis_result())
+        assert "影子" in out
+
+    def test_markdown_url_category_skip_in_breakdown(self):
+        """标签分类统计包含 URL_CATEGORY_SKIP。"""
+        rules = []
+        for i in range(2):
+            net = IPv4Network(f"10.{i}.0.0/24")
+            rule = FlatRule(
+                vendor="test",
+                raw_rule_id=f"rule-{i}",
+                rule_name=f"test-rule-{i}",
+                seq=i,
+                src_ip=[AddressObject(name=str(net), type="subnet",
+                                       value=str(net), network=net)],
+                dst_ip=[AddressObject(name="any", type="any",
+                                       value="0.0.0.0/0",
+                                       network=IPv4Network("0.0.0.0/0"))],
+                services=[ServiceObject(name="tcp/443", protocol="tcp",
+                                         src_port=PortRange.any(),
+                                         dst_port=PortRange(443, 443))],
+                action="permit",
+                enabled=True,
+                analysis_tags=["URL_CATEGORY_SKIP"] if i == 0 else [],
+            )
+            rules.append(rule)
+        result = AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="test", source_file="test.cfg",
+        )
+        out = MarkdownExporter().export(result)
+        assert "分析跳过" in out
+        assert "URL_CATEGORY_SKIP" in out
+        assert "| 1 |" in out or "| 1 | 信息 |" in out

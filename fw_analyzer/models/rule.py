@@ -129,6 +129,7 @@ class FlatRule:
     log_enabled: bool = True                        # 是否开启日志记录（默认 True）
     comment: str = ""
     ticket: str = ""                                # ITO 工单号（从 rule_name/comment 提取）
+    url_category: str = ""                          # URL 分类（PAN-OS category 字段，"any" 或空=不限）
 
     # --- 分析结果（分析器写入，初始为空）---
     analysis_tags: list[str] = field(default_factory=list)
@@ -173,9 +174,23 @@ class FlatRule:
         ports = list(dict.fromkeys(str(s.src_port) for s in self.services))
         return "; ".join(ports) if ports else "any"
 
+    def shadow_tags(self) -> list[str]:
+        """返回影子相关标签（SHADOW / SHADOW_CONFLICT）。"""
+        return [t for t in self.analysis_tags if t.startswith(("SHADOW:", "SHADOW_CONFLICT:"))]
+
+    def non_shadow_tags(self) -> list[str]:
+        """返回非影子标签（排除 SHADOW / SHADOW_CONFLICT）。"""
+        return [t for t in self.analysis_tags if not t.startswith(("SHADOW:", "SHADOW_CONFLICT:"))]
+
+    def shadow_str(self) -> str:
+        """返回影子标签字符串，多个用 | 分隔。"""
+        tags = self.shadow_tags()
+        return " | ".join(tags) if tags else ""
+
     def analysis_tags_str(self) -> str:
-        """返回分析标签字符串，多个用 | 分隔。"""
-        return " | ".join(self.analysis_tags) if self.analysis_tags else ""
+        """返回非影子分析标签字符串，多个用 | 分隔。"""
+        tags = self.non_shadow_tags()
+        return " | ".join(tags) if tags else ""
 
     def warnings_str(self) -> str:
         """返回警告字符串，多个用 | 分隔。"""
@@ -200,7 +215,9 @@ class FlatRule:
             "log_enabled": self.log_enabled,
             "comment": self.comment,
             "ticket": self.ticket,
-            "analysis_tags": self.analysis_tags,
+            "url_category": self.url_category,
+            "shadow": self.shadow_tags(),
+            "analysis_tags": self.non_shadow_tags(),
             "warnings": [w.to_dict() for w in self.warnings],
         }
 
@@ -229,6 +246,8 @@ class FlatRule:
             "log_enabled": self.log_enabled,
             "comment": self.comment,
             "ticket": self.ticket,
+            "url_category": self.url_category,
+            "shadow": self.shadow_str(),
             "analysis_tags": self.analysis_tags_str(),
             "warnings": self.warnings_str(),
             "vendor": self.vendor,
