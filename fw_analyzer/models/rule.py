@@ -131,6 +131,10 @@ class FlatRule:
     ticket: str = ""                                # ITO 工单号（从 rule_name/comment 提取）
     url_category: str = ""                          # URL 分类（PAN-OS category 字段，"any" 或空=不限）
 
+    # --- 原始配置（Shadow 详细报告使用）---
+    raw_config: str = ""                                # 原始配置命令文本
+    referenced_objects: list[str] = field(default_factory=list)  # 引用的 object 名称列表
+
     # --- 分析结果（分析器写入，初始为空）---
     analysis_tags: list[str] = field(default_factory=list)
 

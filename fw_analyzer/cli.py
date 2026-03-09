@@ -29,6 +29,7 @@ from .trace import TraceEngine, TraceQuery, load_trace_queries_from_csv
 from .exporters.csv_exporter import CsvExporter
 from .exporters.json_exporter import JsonExporter
 from .exporters.markdown_exporter import MarkdownExporter
+from .exporters.shadow_detail_exporter import ShadowDetailExporter
 
 
 # ------------------------------------------------------------------
@@ -315,7 +316,14 @@ def cmd_parse(file: str, vendor: str, config: str | None, output: str | None, fm
 @cli.command("analyze")
 @click.argument("file", type=click.Path(exists=True, readable=True))
 @_common_options
-def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, fmt: str):
+@click.option(
+    "--shadow-detail", "shadow_detail",
+    default=None,
+    metavar="PREFIX",
+    help="生成 Shadow 详细报告。指定输出文件名前缀，将生成 PREFIX.csv 和 PREFIX.md 两个文件。",
+)
+def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, fmt: str,
+                shadow_detail: str | None):
     """解析并分析防火墙配置，检测影子规则、冗余规则、过宽规则和合规问题。
 
     FILE 为防火墙配置文件路径。
@@ -357,6 +365,21 @@ def cmd_analyze(file: str, vendor: str, config: str | None, output: str | None, 
         out = _format_rules_table(result)
 
     _write_output(out, output)
+
+    # Shadow Detail Report
+    if shadow_detail:
+        sd_exporter = ShadowDetailExporter(config_text=content)
+        sd_csv = sd_exporter.export_csv(result)
+        sd_md = sd_exporter.export_markdown(result)
+
+        csv_path = f"{shadow_detail}.csv"
+        md_path = f"{shadow_detail}.md"
+        Path(csv_path).write_text(sd_csv, encoding="utf-8")
+        Path(md_path).write_text(sd_md, encoding="utf-8")
+        click.echo(
+            f"\nShadow 详细报告已生成：\n  CSV: {csv_path}\n  Markdown: {md_path}",
+            err=True,
+        )
 
 
 # ------------------------------------------------------------------

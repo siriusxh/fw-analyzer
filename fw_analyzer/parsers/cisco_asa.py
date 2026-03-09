@@ -350,6 +350,15 @@ class CiscoAsaParser(AbstractParser):
                         for s in services
                     ]
 
+            # --- raw_config & referenced_objects ---
+            raw_config = m.group(0)
+            ref_objects: list[str] = []
+            raw_rest = m.group(3)
+            for obj_m in re.finditer(r'\bobject(?:-group)?\s+(\S+)', raw_rest):
+                obj_name = obj_m.group(1)
+                if obj_name not in ref_objects:
+                    ref_objects.append(obj_name)
+
             rule = self._make_rule(
                 raw_rule_id=rule_id,
                 rule_name=f"{acl_name} rule {seq}",
@@ -361,6 +370,8 @@ class CiscoAsaParser(AbstractParser):
                 interface=acl_name,
                 log_enabled=log_enabled,
                 comment=self._extract_ito_from_line(m.group(3)),
+                raw_config=raw_config,
+                referenced_objects=ref_objects,
             )
             rules.append(rule)
 

@@ -438,12 +438,16 @@ class FortinetParser(AbstractParser):
         blocks = self._tokenize(text)
         rules: list[FlatRule] = []
 
+        # 预提取原始 edit 块文本（用于 raw_config）
+        raw_edit_blocks = self._extract_raw_edit_blocks(text)
+
         # config firewall policy
         policy_entries = self._find_blocks(blocks, "firewall", "policy")
         for entry in policy_entries:
             if entry["type"] != "edit":
                 continue
-            rule = self._parse_policy_entry(entry, len(rules))
+            raw_config = raw_edit_blocks.get(entry["name"], "")
+            rule = self._parse_policy_entry(entry, len(rules), raw_config=raw_config)
             if rule:
                 rules.append(rule)
 
@@ -452,7 +456,32 @@ class FortinetParser(AbstractParser):
 
         return rules
 
-    def _parse_policy_entry(self, entry: dict, seq: int) -> FlatRule | None:
+    @staticmethod
+    def _extract_raw_edit_blocks(text: str) -> dict[str, str]:
+        """从原始配置文本中提取 'config firewall policy' 内的 edit 块原文。
+
+        返回 {policy_id: raw_text} 映射。
+        """
+        result: dict[str, str] = {}
+        # 定位 config firewall policy ... end 段
+        policy_section_re = re.compile(
+            r"^config\s+firewall\s+policy\s*$(.*?)^end\s*$",
+            re.MULTILINE | re.DOTALL,
+        )
+        for sec_m in policy_section_re.finditer(text):
+            section = sec_m.group(1)
+            # 提取每个 edit N ... next 块
+            edit_re = re.compile(
+                r"(^\s*edit\s+(\S+)\s*$.*?)(?=^\s*edit\s+\S+\s*$|^\s*end\s*$|\Z)",
+                re.MULTILINE | re.DOTALL,
+            )
+            for em in edit_re.finditer(section):
+                policy_id = em.group(2).strip('"')
+                raw_block = em.group(1).strip()
+                result[policy_id] = raw_block
+        return result
+
+    def _parse_policy_entry(self, entry: dict, seq: int, *, raw_config: str = "") -> FlatRule | None:
         """解析单条防火墙策略。"""
         raw_id = entry["name"]  # FortiGate 策略 ID 为数字字符串
         sets = entry["sets"]
@@ -557,6 +586,18 @@ class FortinetParser(AbstractParser):
             rule_warnings.append(Warning.from_store_warning(sw))
         self.object_store.warnings.clear()
 
+        # --- referenced_objects ---
+        ref_objects: list[str] = []
+        for n in srcaddr_names:
+            if n.lower() not in ("all", "any") and n not in ref_objects:
+                ref_objects.append(n)
+        for n in dstaddr_names:
+            if n.lower() not in ("all", "any") and n not in ref_objects:
+                ref_objects.append(n)
+        for n in service_names:
+            if n.upper() not in ("ALL", "ANY") and n not in ref_objects:
+                ref_objects.append(n)
+
         return FlatRule(
             vendor=self.vendor,
             raw_rule_id=raw_id,
@@ -572,6 +613,8 @@ class FortinetParser(AbstractParser):
             log_enabled=log_enabled,
             comment=comment,
             warnings=rule_warnings,
+            raw_config=raw_config,
+            referenced_objects=ref_objects,
         )
 
     # AbstractParser 的两阶段接口由基类 parse() 统一调度，此处无需覆盖。

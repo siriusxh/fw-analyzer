@@ -382,6 +382,19 @@ class PaloAltoParser(AbstractParser):
             rule_warnings.append(Warning.from_store_warning(sw))
         self.object_store.warnings.clear()
 
+        # --- raw_config & referenced_objects ---
+        raw_config = ET.tostring(entry, encoding="unicode")
+        ref_objects: list[str] = []
+        for n in src_member_names:
+            if n.lower() != "any" and n not in ref_objects:
+                ref_objects.append(n)
+        for n in dst_member_names:
+            if n.lower() != "any" and n not in ref_objects:
+                ref_objects.append(n)
+        for n in svc_member_names:
+            if n.lower() not in ("any", "application-default") and n not in ref_objects:
+                ref_objects.append(n)
+
         return FlatRule(
             vendor=self.vendor,
             raw_rule_id=name,
@@ -397,6 +410,8 @@ class PaloAltoParser(AbstractParser):
             comment=comment,
             url_category=url_category,
             warnings=rule_warnings,
+            raw_config=raw_config,
+            referenced_objects=ref_objects,
         )
 
     # ------------------------------------------------------------------

@@ -385,6 +385,10 @@ class HuaweiParser(AbstractParser):
                 dst_addrs = self._parse_address_field(rule_block, "destination-address")
                 services = self._parse_service_field(rule_block)
 
+                # --- raw_config & referenced_objects ---
+                raw_config = rm.group(0)
+                ref_objects = self._extract_huawei_ref_objects(rule_block)
+
                 rule = self._make_rule(
                     raw_rule_id=rule_name,
                     rule_name=rule_name,
@@ -398,6 +402,8 @@ class HuaweiParser(AbstractParser):
                     enabled=enabled,
                     log_enabled=log_enabled,
                     comment=comment,
+                    raw_config=raw_config,
+                    referenced_objects=ref_objects,
                 )
                 rules.append(rule)
                 seq += 1
@@ -449,6 +455,10 @@ class HuaweiParser(AbstractParser):
                 dst_addrs = self._parse_address_field(rule_block, "destination-address")
                 services = self._parse_service_field(rule_block)
 
+                # --- raw_config & referenced_objects ---
+                raw_config = rm.group(0)
+                ref_objects = self._extract_huawei_ref_objects(rule_block)
+
                 rule = self._make_rule(
                     raw_rule_id=rule_name,
                     rule_name=rule_name,
@@ -463,6 +473,8 @@ class HuaweiParser(AbstractParser):
                     enabled=enabled,
                     log_enabled=log_enabled,
                     comment=comment,
+                    raw_config=raw_config,
+                    referenced_objects=ref_objects,
                 )
                 rules.append(rule)
                 seq += 1
@@ -518,6 +530,14 @@ class HuaweiParser(AbstractParser):
                     dst_port=dst_port,
                 )
 
+                # --- raw_config & referenced_objects (ACL) ---
+                raw_config = rm.group(0).strip()
+                ref_objects: list[str] = []
+                for addr_set_m in re.finditer(r'address-set\s+(\S+)', rest):
+                    obj_name = addr_set_m.group(1)
+                    if obj_name not in ref_objects:
+                        ref_objects.append(obj_name)
+
                 rule = self._make_rule(
                     raw_rule_id=rule_id,
                     rule_name=rule_id,
@@ -527,11 +547,43 @@ class HuaweiParser(AbstractParser):
                     services=[svc],
                     action=action,
                     log_enabled=log_enabled,
+                    raw_config=raw_config,
+                    referenced_objects=ref_objects,
                 )
                 rules.append(rule)
                 seq += 1
 
         return rules
+
+    def _extract_huawei_ref_objects(self, rule_block: str) -> list[str]:
+        """从华为 security-policy / interzone-policy 规则块中提取引用的对象名列表。"""
+        names: list[str] = []
+        # address-group / address-set 引用
+        for m in re.finditer(
+            r"(?:address-group|address-set)\s+" + _NAME_RE, rule_block,
+        ):
+            name = m.group(1) or m.group(2)
+            if name not in names:
+                names.append(name)
+        # service-set 引用
+        for m in re.finditer(r"service-set\s+(\S+)", rule_block):
+            name = m.group(1)
+            if name not in names:
+                names.append(name)
+        # 直接服务名（排除 any / service-set / protocol / 引号名）
+        for m in re.finditer(
+            r'^\s+service\s+(?!service-set\s|any\s|any$|protocol\s|")(\S+)',
+            rule_block, re.MULTILINE,
+        ):
+            name = m.group(1)
+            if name not in names:
+                names.append(name)
+        # 引号名称服务
+        for m in re.finditer(r'^\s+service\s+"([^"]+)"', rule_block, re.MULTILINE):
+            name = m.group(1)
+            if name not in names:
+                names.append(name)
+        return names
 
     def _parse_acl_rule_body(
         self, body: str, rule_id: str

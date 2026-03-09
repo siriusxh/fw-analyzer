@@ -573,3 +573,605 @@ class TestMarkdownExporterNewColumns:
         assert "分析跳过" in out
         assert "URL_CATEGORY_SKIP" in out
         assert "| 1 |" in out or "| 1 | 信息 |" in out
+
+
+# ==================================================================
+# Phase 4: ShadowDetailExporter + RawTextExtractor 测试
+# ==================================================================
+
+
+from fw_analyzer.exporters.shadow_detail_exporter import (
+    ShadowDetailExporter,
+    SHADOW_DETAIL_CSV_FIELDS,
+    _build_shadow_pairs,
+    _rule_desc,
+)
+from fw_analyzer.exporters.raw_text_extractor import RawTextExtractor
+
+
+# ------------------------------------------------------------------
+# RawTextExtractor 测试
+# ------------------------------------------------------------------
+
+class TestRawTextExtractorCisco:
+    """RawTextExtractor — Cisco ASA 对象定义提取。"""
+
+    CISCO_CONFIG = """\
+object network web-server
+ host 10.0.0.10
+
+object network db-server
+ host 10.0.0.20
+
+object-group network internal-nets
+ network-object 192.168.0.0 255.255.0.0
+ network-object 10.0.0.0 255.255.0.0
+
+object-group service admin-svcs tcp
+ port-object eq 22
+ port-object eq 443
+"""
+
+    def test_extract_object(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", self.CISCO_CONFIG, ["web-server"])
+        assert "web-server" in result
+        assert "host 10.0.0.10" in result["web-server"]
+
+    def test_extract_object_group(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", self.CISCO_CONFIG, ["internal-nets"])
+        assert "internal-nets" in result
+        assert "192.168.0.0" in result["internal-nets"]
+
+    def test_extract_service_group(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", self.CISCO_CONFIG, ["admin-svcs"])
+        assert "admin-svcs" in result
+        assert "port-object eq 22" in result["admin-svcs"]
+
+    def test_not_found_returns_empty(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", self.CISCO_CONFIG, ["nonexistent"])
+        assert result == {}
+
+    def test_empty_names_returns_empty(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", self.CISCO_CONFIG, [])
+        assert result == {}
+
+
+class TestRawTextExtractorHuawei:
+    """RawTextExtractor — 华为 USG 对象定义提取。"""
+
+    HUAWEI_CONFIG = """\
+ip address-group inner-grp
+  address 10.1.1.1 mask 255.255.255.255
+  address 10.1.1.2 mask 255.255.255.255
+
+ip service-set web-services type object
+ service 0 protocol tcp destination-port 80 to 443
+"""
+
+    def test_extract_address_group(self):
+        ext = RawTextExtractor()
+        result = ext.extract("huawei", self.HUAWEI_CONFIG, ["inner-grp"])
+        assert "inner-grp" in result
+        assert "10.1.1.1" in result["inner-grp"]
+
+    def test_extract_service_set(self):
+        ext = RawTextExtractor()
+        result = ext.extract("huawei", self.HUAWEI_CONFIG, ["web-services"])
+        assert "web-services" in result
+        assert "tcp" in result["web-services"]
+
+
+class TestRawTextExtractorPaloAlto:
+    """RawTextExtractor — PAN-OS set 格式对象定义提取。"""
+
+    PA_CONFIG = """\
+set address web-server ip-netmask 10.0.0.10/32
+set address internal-net ip-netmask 192.168.1.0/24
+set address-group internal-grp static [ internal-net ]
+set service svc-https protocol tcp port 443
+"""
+
+    def test_extract_address(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_CONFIG, ["web-server"])
+        assert "web-server" in result
+        assert "10.0.0.10" in result["web-server"]
+
+    def test_extract_address_group(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_CONFIG, ["internal-grp"])
+        assert "internal-grp" in result
+
+    def test_extract_service(self):
+        ext = RawTextExtractor()
+        result = ext.extract("paloalto", self.PA_CONFIG, ["svc-https"])
+        assert "svc-https" in result
+        assert "443" in result["svc-https"]
+
+
+class TestRawTextExtractorFortinet:
+    """RawTextExtractor — FortiGate 对象定义提取。"""
+
+    FG_CONFIG = """\
+config firewall address
+    edit "internal-net"
+        set subnet 192.168.1.0 255.255.255.0
+    next
+    edit "web-server"
+        set type ipmask
+        set subnet 10.0.0.10 255.255.255.255
+    next
+end
+config firewall service custom
+    edit "HTTPS"
+        set protocol TCP
+        set tcp-portrange 443
+    next
+end
+"""
+
+    def test_extract_address(self):
+        ext = RawTextExtractor()
+        result = ext.extract("fortinet", self.FG_CONFIG, ["internal-net"])
+        assert "internal-net" in result
+        assert "192.168.1.0" in result["internal-net"]
+
+    def test_extract_service(self):
+        ext = RawTextExtractor()
+        result = ext.extract("fortinet", self.FG_CONFIG, ["HTTPS"])
+        assert "HTTPS" in result
+        assert "443" in result["HTTPS"]
+
+    def test_not_found(self):
+        ext = RawTextExtractor()
+        result = ext.extract("fortinet", self.FG_CONFIG, ["nonexistent"])
+        assert result == {}
+
+
+class TestRawTextExtractorUnknownVendor:
+    """RawTextExtractor — 未知厂商。"""
+
+    def test_unknown_vendor_returns_empty(self):
+        ext = RawTextExtractor()
+        result = ext.extract("unknown-vendor", "some text", ["obj1"])
+        assert result == {}
+
+    def test_empty_config_returns_empty(self):
+        ext = RawTextExtractor()
+        result = ext.extract("cisco-asa", "", ["obj1"])
+        assert result == {}
+
+
+# ------------------------------------------------------------------
+# ShadowDetailExporter 辅助函数测试
+# ------------------------------------------------------------------
+
+class TestBuildShadowPairs:
+    """_build_shadow_pairs() 构建 shadow 关系对。"""
+
+    def _make_result_with_shadows(self):
+        """构造含 shadow 关系的 AnalysisResult。"""
+        rules = []
+        for i in range(3):
+            net = IPv4Network(f"10.{i}.0.0/24")
+            rule = FlatRule(
+                vendor="test",
+                raw_rule_id=f"rule-{i}",
+                rule_name=f"test-rule-{i}",
+                seq=i,
+                src_ip=[AddressObject(name=str(net), type="subnet",
+                                       value=str(net), network=net)],
+                dst_ip=[AddressObject(name="any", type="any",
+                                       value="0.0.0.0/0",
+                                       network=IPv4Network("0.0.0.0/0"))],
+                services=[ServiceObject(name="tcp/443", protocol="tcp",
+                                         src_port=PortRange.any(),
+                                         dst_port=PortRange(443, 443))],
+                action="permit",
+                enabled=True,
+                raw_config=f"access-list test permit tcp 10.{i}.0.0/24 any eq 443",
+            )
+            rules.append(rule)
+
+        # rule-1 shadowed by rule-0
+        rules[1].analysis_tags = [
+            "SHADOW:by=rule-0",
+            "SHADOW_OTHERS:rule-2",  # this is a shadower tag, not victim
+        ]
+        # rule-2 shadow-conflicted by rule-0
+        rules[2].analysis_tags = ["SHADOW_CONFLICT:by=rule-0"]
+        # rule-0 is the shadower
+        rules[0].analysis_tags = ["SHADOW_OTHERS:rule-1", "SHADOW_CONFLICT_OTHERS:rule-2"]
+
+        return AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="test", source_file="test.cfg",
+        )
+
+    def test_pairs_count(self):
+        result = self._make_result_with_shadows()
+        pairs = _build_shadow_pairs(result)
+        assert len(pairs) == 2
+
+    def test_pairs_types(self):
+        result = self._make_result_with_shadows()
+        pairs = _build_shadow_pairs(result)
+        types = {stype for _, stype, _ in pairs}
+        assert "SHADOW" in types
+        assert "SHADOW_CONFLICT" in types
+
+    def test_pairs_sorted_by_seq(self):
+        result = self._make_result_with_shadows()
+        pairs = _build_shadow_pairs(result)
+        # All pairs have shadower seq=0, should be sorted by victim seq
+        victim_seqs = [v.seq for _, _, v in pairs]
+        assert victim_seqs == sorted(victim_seqs)
+
+    def test_no_shadow_returns_empty(self):
+        result = _make_analysis_result()
+        # clear all tags
+        for r in result.rules:
+            r.analysis_tags = []
+        pairs = _build_shadow_pairs(result)
+        assert pairs == []
+
+
+class TestRuleDesc:
+    """_rule_desc() 规则摘要描述。"""
+
+    def test_basic_desc(self):
+        rule = FlatRule(
+            vendor="test", raw_rule_id="r1", rule_name="test",
+            seq=0, action="permit", enabled=True,
+        )
+        desc = _rule_desc(rule)
+        assert "PERMIT" in desc
+        assert "any" in desc
+
+    def test_desc_with_zone(self):
+        rule = FlatRule(
+            vendor="test", raw_rule_id="r1", rule_name="test",
+            seq=0, action="deny", enabled=True,
+            src_zone="trust", dst_zone="untrust",
+        )
+        desc = _rule_desc(rule)
+        assert "DENY" in desc
+        assert "trust" in desc
+        assert "untrust" in desc
+
+    def test_desc_with_ticket(self):
+        rule = FlatRule(
+            vendor="test", raw_rule_id="r1", rule_name="test",
+            seq=0, action="permit", enabled=True,
+            ticket="ITO-12345",
+        )
+        desc = _rule_desc(rule)
+        assert "ITO-12345" in desc
+
+
+# ------------------------------------------------------------------
+# ShadowDetailExporter 完整输出测试
+# ------------------------------------------------------------------
+
+class TestShadowDetailExporterMarkdown:
+    """ShadowDetailExporter.export_markdown() 测试。"""
+
+    def _make_shadow_result(self):
+        """构造含 shadow 关系的 AnalysisResult。"""
+        rules = []
+        for i in range(3):
+            net = IPv4Network(f"10.{i}.0.0/24")
+            rule = FlatRule(
+                vendor="cisco-asa",
+                raw_rule_id=f"rule-{i}",
+                rule_name=f"test-rule-{i}",
+                seq=i,
+                src_ip=[AddressObject(name=str(net), type="subnet",
+                                       value=str(net), network=net)],
+                dst_ip=[AddressObject(name="any", type="any",
+                                       value="0.0.0.0/0",
+                                       network=IPv4Network("0.0.0.0/0"))],
+                services=[ServiceObject(name="tcp/443", protocol="tcp",
+                                         src_port=PortRange.any(),
+                                         dst_port=PortRange(443, 443))],
+                action="permit",
+                enabled=True,
+                raw_config=f"access-list test permit tcp 10.{i}.0.0/24 any eq 443",
+                referenced_objects=["internal-nets"] if i == 0 else [],
+            )
+            rules.append(rule)
+
+        # rule-1 shadowed by rule-0
+        rules[1].analysis_tags = ["SHADOW:by=rule-0"]
+        # rule-2 shadow-conflicted by rule-0, with extra tags
+        rules[2].analysis_tags = [
+            "SHADOW_CONFLICT:by=rule-0",
+            "COMPLIANCE:NO_TICKET",
+        ]
+
+        return AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="cisco-asa", source_file="test.cfg",
+        )
+
+    def test_returns_string(self):
+        result = self._make_shadow_result()
+        exporter = ShadowDetailExporter()
+        out = exporter.export_markdown(result)
+        assert isinstance(out, str)
+
+    def test_has_title(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "# Shadow Detail Report" in out
+
+    def test_has_source_file(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "test.cfg" in out
+
+    def test_has_shadower_heading(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "## rule-0" in out
+
+    def test_has_victim_heading(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "#### → rule-1" in out
+        assert "#### → rule-2" in out
+
+    def test_has_shadow_type(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "[SHADOW]" in out
+        assert "[SHADOW_CONFLICT]" in out
+
+    def test_has_original_config(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "Original Config" in out
+        assert "access-list test permit tcp" in out
+
+    def test_has_summary_table(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "| Field | Value |" in out
+        assert "| Action |" in out
+
+    def test_has_other_tags(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "COMPLIANCE:NO_TICKET" in out
+
+    def test_no_shadow_returns_no_relationships(self):
+        result = _make_analysis_result()
+        for r in result.rules:
+            r.analysis_tags = []
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "No shadow relationships found" in out
+
+    def test_pair_count_in_header(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_markdown(result)
+        assert "Shadow pairs: **2**" in out
+
+
+class TestShadowDetailExporterCsv:
+    """ShadowDetailExporter.export_csv() 测试。"""
+
+    def _make_shadow_result(self):
+        rules = []
+        for i in range(3):
+            net = IPv4Network(f"10.{i}.0.0/24")
+            rule = FlatRule(
+                vendor="test",
+                raw_rule_id=f"rule-{i}",
+                rule_name=f"test-rule-{i}",
+                seq=i,
+                src_ip=[AddressObject(name=str(net), type="subnet",
+                                       value=str(net), network=net)],
+                dst_ip=[AddressObject(name="any", type="any",
+                                       value="0.0.0.0/0",
+                                       network=IPv4Network("0.0.0.0/0"))],
+                services=[ServiceObject(name="tcp/443", protocol="tcp",
+                                         src_port=PortRange.any(),
+                                         dst_port=PortRange(443, 443))],
+                action="permit",
+                enabled=True,
+                raw_config=f"access-list test permit tcp 10.{i}.0.0/24 any eq 443",
+            )
+            rules.append(rule)
+
+        rules[1].analysis_tags = ["SHADOW:by=rule-0"]
+        rules[2].analysis_tags = [
+            "SHADOW_CONFLICT:by=rule-0",
+            "OVERWIDE:HIGH",
+        ]
+
+        return AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="test", source_file="test.cfg",
+        )
+
+    def test_returns_string(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        assert isinstance(out, str)
+
+    def test_has_bom(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        assert out.startswith("\ufeff")
+
+    def test_has_12_columns(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(clean))
+        assert reader.fieldnames is not None
+        assert len(reader.fieldnames) == 12
+
+    def test_csv_fields_match(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(clean))
+        assert list(reader.fieldnames) == SHADOW_DETAIL_CSV_FIELDS
+
+    def test_row_count(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == 2  # two shadow pairs
+
+    def test_shadow_type_values(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        types = {row["shadow_type"] for row in rows}
+        assert types == {"SHADOW", "SHADOW_CONFLICT"}
+
+    def test_shadower_id_populated(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert all(row["shadower_id"] == "rule-0" for row in rows)
+
+    def test_victim_ids_correct(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        victim_ids = {row["victim_id"] for row in rows}
+        assert victim_ids == {"rule-1", "rule-2"}
+
+    def test_victim_other_tags(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        conflict_row = [r for r in rows if r["victim_id"] == "rule-2"][0]
+        assert "OVERWIDE:HIGH" in conflict_row["victim_other_tags"]
+
+    def test_raw_config_in_csv(self):
+        result = self._make_shadow_result()
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        # All rules have raw_config set
+        for row in rows:
+            assert row["shadower_raw_config"] != ""
+            assert row["victim_raw_config"] != ""
+
+    def test_no_shadow_returns_header_only(self):
+        result = _make_analysis_result()
+        for r in result.rules:
+            r.analysis_tags = []
+        out = ShadowDetailExporter().export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == 0
+
+
+# ------------------------------------------------------------------
+# ShadowDetailExporter with config_text (object extraction)
+# ------------------------------------------------------------------
+
+class TestShadowDetailWithConfigText:
+    """ShadowDetailExporter with config_text for object extraction."""
+
+    CISCO_CONFIG = """\
+object-group network internal-nets
+ network-object 192.168.0.0 255.255.0.0
+ network-object 10.0.0.0 255.255.0.0
+
+access-list OUTSIDE_IN extended permit tcp object-group internal-nets any eq 443
+access-list OUTSIDE_IN extended deny ip any any
+"""
+
+    def _make_result(self):
+        rules = [
+            FlatRule(
+                vendor="cisco-asa",
+                raw_rule_id="rule-0",
+                rule_name="rule-0",
+                seq=0,
+                action="permit",
+                enabled=True,
+                raw_config="access-list OUTSIDE_IN extended permit tcp object-group internal-nets any eq 443",
+                referenced_objects=["internal-nets"],
+                analysis_tags=["SHADOW_OTHERS:rule-1"],
+            ),
+            FlatRule(
+                vendor="cisco-asa",
+                raw_rule_id="rule-1",
+                rule_name="rule-1",
+                seq=1,
+                action="deny",
+                enabled=True,
+                raw_config="access-list OUTSIDE_IN extended deny ip any any",
+                referenced_objects=[],
+                analysis_tags=["SHADOW:by=rule-0"],
+            ),
+        ]
+        return AnalysisResult(
+            rules=rules, parse_warnings=[], analysis_warnings=[],
+            vendor="cisco-asa", source_file="test.cfg",
+        )
+
+    def test_markdown_has_referenced_objects(self):
+        result = self._make_result()
+        exporter = ShadowDetailExporter(config_text=self.CISCO_CONFIG)
+        out = exporter.export_markdown(result)
+        assert "Referenced Objects" in out
+        assert "192.168.0.0" in out
+
+    def test_csv_has_object_definitions(self):
+        result = self._make_result()
+        exporter = ShadowDetailExporter(config_text=self.CISCO_CONFIG)
+        out = exporter.export_csv(result)
+        clean = out.lstrip("\ufeff")
+        rows = list(csv.DictReader(io.StringIO(clean)))
+        assert len(rows) == 1
+        assert "192.168.0.0" in rows[0]["shadower_objects"]
+
+
+# ------------------------------------------------------------------
+# ShadowDetailExporter integration with real parse
+# ------------------------------------------------------------------
+
+class TestShadowDetailIntegration:
+    """ShadowDetailExporter 使用真实解析+分析结果的集成测试。"""
+
+    def test_cisco_shadow_detail_roundtrip(self, cisco_complex_cfg):
+        """Cisco 复杂配置 → 解析 → 分析 → shadow detail 导出不报错。"""
+        from fw_analyzer.analyzers.engine import AnalysisEngine
+        parse_result = get_parser("cisco-asa").parse(cisco_complex_cfg)
+        analysis = AnalysisEngine().analyze(parse_result)
+        exporter = ShadowDetailExporter(config_text=cisco_complex_cfg)
+        md = exporter.export_markdown(analysis)
+        csv_out = exporter.export_csv(analysis)
+        assert isinstance(md, str)
+        assert isinstance(csv_out, str)
+        # CSV should have BOM
+        assert csv_out.startswith("\ufeff")
+
+    def test_huawei_shadow_detail_roundtrip(self, huawei_complex_cfg):
+        """Huawei 复杂配置 → 解析 → 分析 → shadow detail 导出不报错。"""
+        from fw_analyzer.analyzers.engine import AnalysisEngine
+        parse_result = get_parser("huawei").parse(huawei_complex_cfg)
+        analysis = AnalysisEngine().analyze(parse_result)
+        exporter = ShadowDetailExporter(config_text=huawei_complex_cfg)
+        md = exporter.export_markdown(analysis)
+        csv_out = exporter.export_csv(analysis)
+        assert isinstance(md, str)
+        assert isinstance(csv_out, str)

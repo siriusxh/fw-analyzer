@@ -1461,3 +1461,220 @@ access-list outside extended permit tcp object-group ITO-37961-source object-gro
         ComplianceAnalyzer().analyze(result.rules, config)
         rule_0 = result.rules[0]
         assert rule_0.ticket == "ITO-40213"
+
+
+# ==================================================================
+# Phase 4: raw_config / referenced_objects 字段测试
+# ==================================================================
+
+
+class TestHuaweiRawConfig:
+    """华为解析器 raw_config 和 referenced_objects 测试。"""
+
+    def test_security_policy_raw_config_populated(self, huawei_cfg):
+        """安全策略规则应填充 raw_config。"""
+        result = get_parser("huawei").parse(huawei_cfg)
+        for rule in result.rules:
+            assert rule.raw_config != "", f"{rule.rule_name} missing raw_config"
+
+    def test_security_policy_raw_config_contains_action(self, huawei_cfg):
+        """raw_config 应包含动作关键字。"""
+        result = get_parser("huawei").parse(huawei_cfg)
+        for rule in result.rules:
+            assert ("action permit" in rule.raw_config
+                    or "action deny" in rule.raw_config
+                    or "action drop" in rule.raw_config), (
+                f"{rule.rule_name}: raw_config missing action keyword"
+            )
+
+    def test_complex_referenced_objects(self, huawei_complex_cfg):
+        """引用了 address-group/service-set 的规则应填充 referenced_objects。"""
+        result = get_parser("huawei").parse(huawei_complex_cfg)
+        web_rule = [r for r in result.rules if r.rule_name == "permit-web"][0]
+        assert "inner-grp" in web_rule.referenced_objects
+        assert "web-services" in web_rule.referenced_objects
+
+    def test_complex_db_rule_referenced_objects(self, huawei_complex_cfg):
+        """permit-db 规则应引用 inner-grp、servers-grp、db-services。"""
+        result = get_parser("huawei").parse(huawei_complex_cfg)
+        db_rule = [r for r in result.rules if r.rule_name == "permit-db"][0]
+        assert "inner-grp" in db_rule.referenced_objects
+        assert "servers-grp" in db_rule.referenced_objects
+        assert "db-services" in db_rule.referenced_objects
+
+    def test_no_objects_rule_has_empty_list(self, huawei_complex_cfg):
+        """deny-all 无对象引用，referenced_objects 应为空列表。"""
+        result = get_parser("huawei").parse(huawei_complex_cfg)
+        deny_all = [r for r in result.rules if r.rule_name == "deny-all"][0]
+        assert deny_all.referenced_objects == []
+
+    def test_acl_raw_config_populated(self, huawei_complex_cfg):
+        """ACL 规则也应填充 raw_config。"""
+        result = get_parser("huawei").parse(huawei_complex_cfg)
+        acl_rules = [r for r in result.rules if r.raw_rule_id.startswith("acl")]
+        assert len(acl_rules) >= 1
+        for rule in acl_rules:
+            assert rule.raw_config != "", f"{rule.raw_rule_id} missing raw_config"
+
+
+class TestCiscoAsaRawConfig:
+    """Cisco ASA 解析器 raw_config 和 referenced_objects 测试。"""
+
+    def test_raw_config_populated(self, cisco_cfg):
+        """所有规则应填充 raw_config。"""
+        result = get_parser("cisco-asa").parse(cisco_cfg)
+        for rule in result.rules:
+            assert rule.raw_config != "", f"{rule.raw_rule_id} missing raw_config"
+
+    def test_raw_config_contains_access_list(self, cisco_cfg):
+        """raw_config 应包含 access-list 关键字。"""
+        result = get_parser("cisco-asa").parse(cisco_cfg)
+        for rule in result.rules:
+            assert "access-list" in rule.raw_config, (
+                f"{rule.raw_rule_id}: raw_config missing access-list"
+            )
+
+    def test_object_group_in_referenced_objects(self, cisco_cfg):
+        """引用 object-group 的规则应在 referenced_objects 中包含该组名。"""
+        result = get_parser("cisco-asa").parse(cisco_cfg)
+        # 第一条规则引用了 object-group internal-nets
+        rule_0 = result.rules[0]
+        assert "internal-nets" in rule_0.referenced_objects
+
+    def test_complex_referenced_objects(self, cisco_complex_cfg):
+        """复杂配置中引用 deep-grp 的规则应包含该组名。"""
+        result = get_parser("cisco-asa").parse(cisco_complex_cfg)
+        rule_0 = result.rules[0]
+        assert "deep-grp" in rule_0.referenced_objects
+
+    def test_no_object_rule_has_empty_list(self, cisco_cfg):
+        """deny ip any any 无对象引用，referenced_objects 应为空。"""
+        result = get_parser("cisco-asa").parse(cisco_cfg)
+        deny_rule = [r for r in result.rules if r.action == "deny"][0]
+        assert deny_rule.referenced_objects == []
+
+
+class TestPaloAltoXmlRawConfig:
+    """Palo Alto XML 解析器 raw_config 和 referenced_objects 测试。"""
+
+    def test_raw_config_populated(self, paloalto_cfg):
+        """所有规则应填充 raw_config（XML 片段）。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        for rule in result.rules:
+            assert rule.raw_config != "", f"{rule.rule_name} missing raw_config"
+
+    def test_raw_config_is_xml(self, paloalto_cfg):
+        """raw_config 应为 XML 格式（含 <entry> 标签）。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        for rule in result.rules:
+            assert "<entry" in rule.raw_config, (
+                f"{rule.rule_name}: raw_config not XML"
+            )
+
+    def test_referenced_objects_contains_groups(self, paloalto_cfg):
+        """permit-https 引用 internal-grp 和 svc-https。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        https_rule = [r for r in result.rules if r.rule_name == "permit-https"][0]
+        assert "internal-grp" in https_rule.referenced_objects
+        assert "svc-https" in https_rule.referenced_objects
+
+    def test_any_not_in_referenced_objects(self, paloalto_cfg):
+        """'any' 不应出现在 referenced_objects 中。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        for rule in result.rules:
+            assert "any" not in rule.referenced_objects, (
+                f"{rule.rule_name}: 'any' should be filtered"
+            )
+
+    def test_deny_all_no_objects(self, paloalto_cfg):
+        """deny-all 无对象引用（全部为 any），referenced_objects 应为空。"""
+        result = get_parser("paloalto").parse(paloalto_cfg)
+        deny_all = [r for r in result.rules if r.rule_name == "deny-all"][0]
+        assert deny_all.referenced_objects == []
+
+
+class TestPaloAltoSetRawConfig:
+    """PAN-OS set 格式解析器 raw_config 和 referenced_objects 测试。"""
+
+    def test_raw_config_populated(self, paloalto_set_cfg):
+        """所有规则应填充 raw_config（set 命令行）。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_cfg)
+        for rule in result.rules:
+            assert rule.raw_config != "", f"{rule.rule_name} missing raw_config"
+
+    def test_raw_config_contains_set_rulebase(self, paloalto_set_cfg):
+        """raw_config 应包含 set rulebase 关键字。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_cfg)
+        for rule in result.rules:
+            assert "set rulebase" in rule.raw_config, (
+                f"{rule.rule_name}: raw_config missing 'set rulebase'"
+            )
+
+    def test_referenced_objects_contains_groups(self, paloalto_set_cfg):
+        """permit-https 引用 internal-grp 和 svc-https。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_cfg)
+        https_rule = [r for r in result.rules if r.rule_name == "permit-https"][0]
+        assert "internal-grp" in https_rule.referenced_objects
+        assert "svc-https" in https_rule.referenced_objects
+
+    def test_any_filtered_from_referenced_objects(self, paloalto_set_cfg):
+        """'any' 和 'application-default' 不应出现在 referenced_objects 中。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_cfg)
+        for rule in result.rules:
+            assert "any" not in rule.referenced_objects
+            assert "application-default" not in rule.referenced_objects
+
+    def test_deny_all_no_objects(self, paloalto_set_cfg):
+        """deny-all 无对象引用，referenced_objects 应为空。"""
+        result = get_parser("paloalto-set").parse(paloalto_set_cfg)
+        deny_all = [r for r in result.rules if r.rule_name == "deny-all"][0]
+        assert deny_all.referenced_objects == []
+
+
+class TestFortinetRawConfig:
+    """Fortinet 解析器 raw_config 和 referenced_objects 测试。"""
+
+    def test_raw_config_populated(self, fortinet_cfg):
+        """所有规则应填充 raw_config。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        for rule in result.rules:
+            assert rule.raw_config != "", f"{rule.rule_name} missing raw_config"
+
+    def test_raw_config_contains_edit(self, fortinet_cfg):
+        """raw_config 应包含 edit 关键字。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        for rule in result.rules:
+            assert "edit" in rule.raw_config, (
+                f"{rule.rule_name}: raw_config missing 'edit'"
+            )
+
+    def test_referenced_objects_for_https(self, fortinet_cfg):
+        """permit-https 引用 internal-grp 和 HTTPS 服务。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        rule = None
+        for r in result.rules:
+            if "permit-https" in r.rule_name:
+                rule = r
+                break
+        assert rule is not None
+        assert "internal-grp" in rule.referenced_objects
+
+    def test_all_any_filtered(self, fortinet_cfg):
+        """'all'/'any'/'ALL'/'ANY' 不应出现在 referenced_objects 中。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        for rule in result.rules:
+            for obj_name in rule.referenced_objects:
+                assert obj_name.lower() not in ("all", "any"), (
+                    f"{rule.rule_name}: '{obj_name}' should be filtered"
+                )
+
+    def test_deny_all_no_objects(self, fortinet_cfg):
+        """deny-all 使用 'all'/'ALL'，referenced_objects 应为空。"""
+        result = get_parser("fortinet").parse(fortinet_cfg)
+        deny_all = None
+        for r in result.rules:
+            if "deny-all" in r.rule_name:
+                deny_all = r
+                break
+        assert deny_all is not None
+        assert deny_all.referenced_objects == []

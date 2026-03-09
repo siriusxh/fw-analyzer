@@ -225,6 +225,8 @@ class PaloAltoSetParser(AbstractParser):
         # 维护规则名称的出现顺序
         rule_order: list[str] = []
         seen_names: set[str] = set()
+        # 收集每条规则的原始配置行
+        raw_lines_map: dict[str, list[str]] = defaultdict(list)
 
         for line in text.splitlines():
             line = line.strip()
@@ -242,6 +244,9 @@ class PaloAltoSetParser(AbstractParser):
             if rule_name not in seen_names:
                 rule_order.append(rule_name)
                 seen_names.add(rule_name)
+
+            # 收集原始行
+            raw_lines_map[rule_name].append(line)
 
             # 收集值
             values = _collect_value(tokens, 6)
@@ -270,14 +275,16 @@ class PaloAltoSetParser(AbstractParser):
         rules: list[FlatRule] = []
         for seq, rule_name in enumerate(rule_order):
             props = rules_props[rule_name]
-            rule = self._build_rule(rule_name, props, seq)
+            raw_lines = raw_lines_map.get(rule_name, [])
+            rule = self._build_rule(rule_name, props, seq, raw_lines)
             if rule:
                 rules.append(rule)
 
         return rules
 
     def _build_rule(
-        self, name: str, props: dict[str, list[str]], seq: int
+        self, name: str, props: dict[str, list[str]], seq: int,
+        raw_lines: list[str] | None = None,
     ) -> FlatRule | None:
         """根据收集的属性构建单条 FlatRule。"""
         rule_warnings: list[Warning] = []
@@ -352,6 +359,19 @@ class PaloAltoSetParser(AbstractParser):
             rule_warnings.append(Warning.from_store_warning(sw))
         self.object_store.warnings.clear()
 
+        # --- raw_config & referenced_objects ---
+        raw_config = "\n".join(raw_lines) if raw_lines else ""
+        ref_objects: list[str] = []
+        for n in props.get("source", []):
+            if n.lower() != "any" and n not in ref_objects:
+                ref_objects.append(n)
+        for n in props.get("destination", []):
+            if n.lower() != "any" and n not in ref_objects:
+                ref_objects.append(n)
+        for n in props.get("service", []):
+            if n.lower() not in ("any", "application-default") and n not in ref_objects:
+                ref_objects.append(n)
+
         return FlatRule(
             vendor=self.vendor,
             raw_rule_id=name,
@@ -368,6 +388,8 @@ class PaloAltoSetParser(AbstractParser):
             comment=comment,
             url_category=url_category,
             warnings=rule_warnings,
+            raw_config=raw_config,
+            referenced_objects=ref_objects,
         )
 
     # ------------------------------------------------------------------
